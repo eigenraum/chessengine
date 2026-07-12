@@ -73,10 +73,11 @@ GUI ──(user move)──► Chess program ──(position, turn, [old tree])�
 ## Setup and Development
 
 - `uv sync` — builds the C++ extension (scikit-build-core + CMake + pybind11) and installs all dependencies.
-- `uv run pytest` — run the test suite.
+- `uv run pytest` — run the test suite (`-m slow` adds the deep perft gate).
 - `uv run chessengine` — play in the terminal.
 - After changing C++ sources: `uv sync --reinstall-package chessengine` to rebuild.
 - Layout: Python package in `python/chessengine/`, C++ sources in `cpp/`, tests in `tests/`.
+- After touching the parallel search, run the ThreadSanitizer gate (build commands in README.md § Development).
 
 ## Status
 

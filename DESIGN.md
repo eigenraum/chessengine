@@ -316,12 +316,12 @@ Exposed as `chessengine._mcts`; `engine.py` wraps it. Rules of the boundary:
 
 ## 7. Milestones
 
-1. **M1 — plumbing:** repo/build (uv + scikit-build-core + CMake + pybind11),
+1. ✅ **M1 — plumbing:** repo/build (uv + scikit-build-core + CMake + pybind11),
    `Game`, minimal CLI (board display, human vs human).
-2. **M2 — C++ core:** board, movegen, perft gate green.
-3. **M3 — sequential MCTS:** arena tree, PUCT, material eval through the batch
+2. ✅ **M2 — C++ core:** board, movegen, perft gate green.
+3. ✅ **M3 — sequential MCTS:** arena tree, PUCT, material eval through the batch
    queue, blocking `search()`; engine plays legal, sensible chess in the CLI.
-4. **M4 — parallelism:** worker pool, virtual loss, atomics, TSan clean;
+4. ✅ **M4 — parallelism:** worker pool, virtual loss, atomics, TSan clean;
    live stats in the CLI; convergence stop.
 5. **M5 — tree reuse + training export:** `advance()`, `tree_snapshot()`.
 6. **M6 — learned evaluation:** PyTorch batch evaluator, policy priors,
