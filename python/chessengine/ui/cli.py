@@ -8,6 +8,9 @@ rest of the code (DESIGN.md section 2.3).
 
 from __future__ import annotations
 
+import argparse
+
+from chessengine.engine import Engine, EngineConfig, SearchLimits
 from chessengine.game import Game, IllegalMoveError
 
 # Letter symbols (from Game.piece_map) -> unicode chess glyphs.
@@ -58,9 +61,48 @@ def _render_history(game: Game) -> str:
     return " ".join(parts)
 
 
+def render_search_result(result, engine_san: str, white_cp: int) -> str:
+    pv = " ".join(result.pv[:6])
+    return (
+        f"engine: {engine_san}  ({result.simulations:,} sims, "
+        f"{result.nodes:,} nodes, {result.elapsed_ms} ms, "
+        f"eval {white_cp:+d}cp for White, stopped: {result.stop_reason})\n"
+        f"        pv: {pv}"
+    )
+
+
+def _engine_move(engine: Engine, game: Game, limits: SearchLimits) -> str:
+    engine.set_position(game.fen())
+    result = engine.search(limits)
+    engine_is_white = game.turn  # before pushing
+    game.push(result.best_move)
+    white_cp = result.root_cp if engine_is_white else -result.root_cp
+    return render_search_result(result, game.san_history()[-1], white_cp)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="chessengine", description="MCTS chess engine, terminal frontend"
+    )
+    parser.add_argument("--human", action="store_true", help="two human players, no engine")
+    parser.add_argument(
+        "--color", choices=["white", "black"], default="white", help="your side (default white)"
+    )
+    parser.add_argument(
+        "--time", type=float, default=3.0, metavar="SECONDS", help="engine think time per move"
+    )
+    parser.add_argument("--workers", type=int, default=1, help="search worker threads")
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
+    engine = None if args.human else Engine(EngineConfig(workers=args.workers))
+    limits = SearchLimits(max_time_ms=int(args.time * 1000))
+    human_is_white = args.color == "white"
+
     game = Game()
-    print("chessengine — human vs human (engine arrives with milestone M3)")
+    print("chessengine — " + ("human vs human" if args.human else f"you play {args.color}"))
     print(_HELP)
     while True:
         print()
@@ -75,6 +117,11 @@ def main() -> None:
                 game = Game()
                 continue
             return
+
+        if engine is not None and game.turn != human_is_white:
+            print("engine is thinking...")
+            print(_engine_move(engine, game, limits))
+            continue
 
         try:
             entry = input("> ").strip()

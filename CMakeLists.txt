@@ -10,6 +10,8 @@ pybind11_add_module(_mcts
     cpp/bindings.cpp
     cpp/core/board.cpp
     cpp/core/movegen.cpp
+    cpp/eval/material.cpp
+    cpp/mcts/search.cpp
 )
 target_include_directories(_mcts PRIVATE cpp)
 

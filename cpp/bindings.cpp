@@ -3,10 +3,32 @@
 
 #include "core/board.h"
 #include "core/movegen.h"
+#include "eval/material.h"
+#include "mcts/search.h"
 
 namespace py = pybind11;
 using core::Board;
 using core::Move;
+
+namespace {
+
+// Composition root for the pybind boundary: one Engine = one evaluator + one
+// Search. Python talks FENs and stats structs; nothing per-node crosses.
+class Engine {
+public:
+    explicit Engine(const mcts::SearchConfig& config) : search_(config, evaluator_) {}
+
+    void set_position(const std::string& fen) { search_.set_position(Board(fen)); }
+    mcts::SearchResult search(const mcts::SearchLimits& limits) { return search_.run(limits); }
+    mcts::SearchStats stats() const { return search_.stats(); }
+    void request_stop() { search_.request_stop(); }
+
+private:
+    eval::MaterialEvaluator evaluator_;
+    mcts::Search search_;
+};
+
+}  // namespace
 
 PYBIND11_MODULE(_mcts, m) {
     m.doc() = "MCTS search core (C++). See DESIGN.md section 5 for the boundary rules.";
@@ -38,4 +60,40 @@ PYBIND11_MODULE(_mcts, m) {
         "perft",
         [](const std::string& fen, int depth) { return core::perft(Board(fen), depth); },
         py::call_guard<py::gil_scoped_release>());
+
+    py::class_<mcts::SearchConfig>(m, "SearchConfig")
+        .def(py::init<>())
+        .def_readwrite("workers", &mcts::SearchConfig::workers)
+        .def_readwrite("batch_size", &mcts::SearchConfig::batch_size)
+        .def_readwrite("c_puct", &mcts::SearchConfig::c_puct)
+        .def_readwrite("virtual_loss", &mcts::SearchConfig::virtual_loss)
+        .def_readwrite("max_nodes", &mcts::SearchConfig::max_nodes)
+        .def_readwrite("seed", &mcts::SearchConfig::seed);
+
+    py::class_<mcts::SearchLimits>(m, "SearchLimits")
+        .def(py::init<>())
+        .def_readwrite("max_time_ms", &mcts::SearchLimits::max_time_ms)
+        .def_readwrite("max_simulations", &mcts::SearchLimits::max_simulations)
+        .def_readwrite("convergence_window", &mcts::SearchLimits::convergence_window)
+        .def_readwrite("convergence_cp_threshold",
+                       &mcts::SearchLimits::convergence_cp_threshold);
+
+    py::class_<mcts::SearchStats>(m, "SearchStats")
+        .def_readonly("simulations", &mcts::SearchStats::simulations)
+        .def_readonly("nodes", &mcts::SearchStats::nodes)
+        .def_readonly("root_value", &mcts::SearchStats::root_value)
+        .def_readonly("root_cp", &mcts::SearchStats::root_cp)
+        .def_readonly("best_move", &mcts::SearchStats::best_move)
+        .def_readonly("pv", &mcts::SearchStats::pv)
+        .def_readonly("elapsed_ms", &mcts::SearchStats::elapsed_ms);
+
+    py::class_<mcts::SearchResult, mcts::SearchStats>(m, "SearchResult")
+        .def_readonly("stop_reason", &mcts::SearchResult::stop_reason);
+
+    py::class_<Engine>(m, "Engine")
+        .def(py::init<const mcts::SearchConfig&>())
+        .def("set_position", &Engine::set_position)
+        .def("search", &Engine::search, py::call_guard<py::gil_scoped_release>())
+        .def("stats", &Engine::stats)
+        .def("request_stop", &Engine::request_stop);
 }
