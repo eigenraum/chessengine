@@ -1,0 +1,30 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "chessengine"
+version = "0.1.0"
+description = "Educational MCTS chess engine: Python game layer, parallel C++ search core"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "chess>=1.11",
+    "numpy>=1.26",
+]
+
+[project.scripts]
+chessengine = "chessengine.ui.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.scikit-build]
+wheel.packages = ["python/chessengine"]
+cmake.version = ">=3.26"
+build-dir = "build/{wheel_tag}"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

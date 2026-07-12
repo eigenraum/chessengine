@@ -72,7 +72,11 @@ GUI ──(user move)──► Chess program ──(position, turn, [old tree])�
 
 ## Setup and Development
 
-No build configuration or dependencies have been set up yet. This section will be updated once tooling is established (build system invocation, test runner, formatting).
+- `uv sync` — builds the C++ extension (scikit-build-core + CMake + pybind11) and installs all dependencies.
+- `uv run pytest` — run the test suite.
+- `uv run chessengine` — play in the terminal.
+- After changing C++ sources: `uv sync --reinstall-package chessengine` to rebuild.
+- Layout: Python package in `python/chessengine/`, C++ sources in `cpp/`, tests in `tests/`.
 
 ## Status
 
