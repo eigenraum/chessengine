@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/board.h"
@@ -48,20 +49,31 @@ struct SearchResult : SearchStats {
                               // "interrupted" | "no_legal_moves"
 };
 
-// One MCTS search over one tree. M3 runs it sequentially (workers = 1), but
-// the tree-update protocol (atomics, expand CAS, virtual loss) is already the
-// one that M4's worker threads share.
+// One MCTS search over one tree, tree-parallel with virtual loss: all worker
+// threads share the arena, visit counts and value sums are atomics, and the
+// expand CAS plus virtual loss keep them coordinated. A controller thread
+// watches the termination conditions. workers = 1 is the fully sequential
+// reference: one worker, and virtual loss cancels out exactly.
 class Search {
 public:
     Search(const SearchConfig& config, eval::Evaluator& evaluator);
+    ~Search();
 
     void set_position(const core::Board& board);  // starts a fresh tree
+
     SearchResult run(const SearchLimits& limits);  // blocking
+    void start(const SearchLimits& limits);        // non-blocking, for the GUI
+    SearchResult stop();                           // interrupt (if running) + collect
+    bool running() const { return running_.load(std::memory_order_acquire); }
+
     void request_stop() { stop_requested_.store(true, std::memory_order_relaxed); }
-    SearchStats stats() const;
+    SearchStats stats() const;  // safe to call while a search is running
 
 private:
-    void simulate();  // one selection -> expansion -> evaluation -> backprop pass
+    SearchResult run_controller(const SearchLimits& limits);
+    void worker_loop(const SearchLimits& limits);
+    void descend(std::vector<std::vector<uint32_t>>& paths,
+                 std::vector<core::Board>& out_boards);
     uint32_t select_child(const Node& parent) const;
     void maybe_expand(uint32_t index, const core::Board& board);
     void backprop(const std::vector<uint32_t>& path, float leaf_value);
@@ -70,9 +82,15 @@ private:
     SearchConfig config_;
     EvalQueue queue_;
     std::unique_ptr<Tree> tree_;
-    std::atomic<bool> stop_requested_{false};
-    std::atomic<uint64_t> simulations_{0};
+    std::atomic<bool> stop_requested_{false};  // external: user/GUI interrupt
+    std::atomic<bool> stop_workers_{false};    // internal: controller -> workers
+    std::atomic<uint64_t> simulations_{0};     // completed simulations
+    std::atomic<int64_t> tickets_{0};          // started simulations (max_simulations)
     std::chrono::steady_clock::time_point started_at_;
+
+    std::thread controller_;
+    std::atomic<bool> running_{false};
+    SearchResult result_;  // written by the controller; read after joining it
 };
 
 }  // namespace mcts

@@ -9,6 +9,7 @@ rest of the code (DESIGN.md section 2.3).
 from __future__ import annotations
 
 import argparse
+import time
 
 from chessengine.engine import Engine, EngineConfig, SearchLimits
 from chessengine.game import Game, IllegalMoveError
@@ -72,9 +73,25 @@ def render_search_result(result, engine_san: str, white_cp: int) -> str:
 
 
 def _engine_move(engine: Engine, game: Game, limits: SearchLimits) -> str:
-    engine.set_position(game.fen())
-    result = engine.search(limits)
+    """Search in the background, showing live stats while the engine thinks."""
     engine_is_white = game.turn  # before pushing
+    engine.set_position(game.fen())
+    engine.start(limits)
+    try:
+        while engine.running():
+            stats = engine.stats()
+            white_cp = stats.root_cp if engine_is_white else -stats.root_cp
+            line = (
+                f"thinking...  {stats.simulations:,} sims  {stats.nodes:,} nodes  "
+                f"eval {white_cp:+d}cp  pv {' '.join(stats.pv[:5])}"
+            )
+            print(f"\r{line[:98]:<98}", end="", flush=True)
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass  # fall through: stop() returns the best move found so far
+    result = engine.stop()
+    print("\r" + " " * 98 + "\r", end="")
+
     game.push(result.best_move)
     white_cp = result.root_cp if engine_is_white else -result.root_cp
     return render_search_result(result, game.san_history()[-1], white_cp)

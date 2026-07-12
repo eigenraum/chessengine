@@ -199,21 +199,24 @@ Notes:
 
 ### 4.2 Simulation loop (search.cpp)
 
-Each worker thread repeats until told to stop:
+Each worker thread keeps up to `batch_size` simulations in flight and repeats
+until told to stop:
 
 ```
-board = root_board
-node  = root
-path  = [root]
-while node is EXPANDED and not terminal:
-    child = argmax PUCT (using N + virtual_loss in place of N)
-    child.virtual_loss += vl
-    board.apply(child.move); path.push(child)
-1. terminal position → value from game result
-2. else → expand node, submit board to EvalQueue, wait for value
-backprop: for n in reversed(path): n.visits++, n.value_sum += value (sign-flipped
-          per ply), n.virtual_loss -= vl
+1. descend (repeat up to batch_size times):
+     from root: child = argmax PUCT (using N + virtual_loss in place of N),
+     child.virtual_loss += vl, board.apply(child.move), ...
+     - terminal or draw leaf → value from the game result, backprop at once
+     - evaluation leaf → expand it, park the path (its virtual loss holds it)
+2. submit ALL parked leaves to the EvalQueue in one blocking call
+3. backprop each returned value: for n in reversed(path): n.visits++,
+   n.value_sum += value (sign-flipped per ply), n.virtual_loss -= vl
 ```
+
+Parking several simulations per worker is what makes evaluation batches form,
+and it amortizes the queue handshake — one condvar round-trip per batch
+instead of per simulation (~3.4x sequential throughput with the material
+evaluator).
 
 - Virtual loss makes concurrent workers repel each other; it is fully removed
   during backprop, so `workers=1` reproduces textbook sequential MCTS exactly.
@@ -235,13 +238,14 @@ public:
 };
 ```
 
-- Workers `submit(board) -> future<float>`-style: push a request into a MPMC
-  queue and block on a per-request slot (condvar). Blocking is fine: virtual
-  loss is already applied, and with NN evaluation the evaluator is the
-  bottleneck anyway. Simple beats clever here.
-- A dedicated **evaluator thread** drains the queue: it collects up to
-  `batch_size` requests (with a short timeout so partial batches flush),
-  calls `Evaluator::evaluate`, and wakes the waiting workers.
+- Workers push their whole in-flight batch into the queue in one blocking
+  `evaluate(boards, values)` call. Blocking is fine: virtual loss is already
+  applied, and with NN evaluation the evaluator is the bottleneck anyway.
+  Simple beats clever here.
+- A dedicated **evaluator thread** drains the queue: it takes up to
+  `batch_size` requests per pass — no flush timeout needed, whatever
+  accumulated while it was busy forms the next batch — calls
+  `Evaluator::evaluate`, and wakes the waiting workers.
 - **Material heuristic** (`eval/material.h`): piece values + small mobility
   term, squashed to 0..1 via the logistic centipawn mapping. Runs inside the
   evaluator thread; batch is a trivial loop. Uniform priors over legal moves.

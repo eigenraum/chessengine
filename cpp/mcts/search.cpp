@@ -103,7 +103,12 @@ uint32_t Search::select_child(const Node& parent) const {
     return best_index;
 }
 
-void Search::simulate() {
+// The selection phase of one simulation: walk down with PUCT + virtual loss.
+// Terminal and draw leaves are backpropagated immediately; a leaf that needs
+// evaluation is appended to paths/boards instead, parked on its virtual loss
+// until the caller has a full batch.
+void Search::descend(std::vector<std::vector<uint32_t>>& paths,
+                     std::vector<core::Board>& out_boards) {
     Tree& tree = *tree_;
     core::Board board = tree.root_board();
     std::vector<uint32_t> path{tree.root()};
@@ -111,8 +116,8 @@ void Search::simulate() {
     tree[tree.root()].virtual_loss.fetch_add(config_.virtual_loss,
                                              std::memory_order_relaxed);
 
-    // Walk down, then compute the leaf value from the perspective of the
-    // player who moved INTO the leaf (the convention node statistics use).
+    // Values are from the perspective of the player who moved INTO the leaf
+    // (the convention node statistics use).
     float value_for_mover;
     for (;;) {
         Node& node = tree[path.back()];
@@ -136,10 +141,10 @@ void Search::simulate() {
             break;
         }
         if (arrived_at_leaf || !expanded) {
-            // Fresh leaf (or expansion raced/arena full): evaluate here. The
-            // evaluator scores for the side to move = the mover's opponent.
-            value_for_mover = 1.0f - queue_.evaluate(board);
-            break;
+            // Fresh leaf (or expansion raced/arena full): needs evaluation.
+            paths.push_back(std::move(path));
+            out_boards.push_back(board);
+            return;
         }
 
         uint32_t child_index = select_child(node);
@@ -165,10 +170,42 @@ void Search::backprop(const std::vector<uint32_t>& path, float leaf_value) {
     }
 }
 
+Search::~Search() {
+    request_stop();
+    if (controller_.joinable()) controller_.join();
+}
+
 SearchResult Search::run(const SearchLimits& limits) {
+    start(limits);
+    controller_.join();
+    return result_;
+}
+
+void Search::start(const SearchLimits& limits) {
     if (!tree_) throw std::logic_error("no position set");
+    if (running()) throw std::logic_error("search already running");
+    if (controller_.joinable()) controller_.join();  // reap a finished search
+
     stop_requested_.store(false, std::memory_order_relaxed);
+    running_.store(true, std::memory_order_release);
+    controller_ = std::thread([this, limits] {
+        result_ = run_controller(limits);
+        running_.store(false, std::memory_order_release);
+    });
+}
+
+SearchResult Search::stop() {
+    request_stop();
+    if (controller_.joinable()) controller_.join();
+    return result_;
+}
+
+// The controller owns the search lifecycle: it expands the root, launches the
+// workers, watches the termination conditions, and collects the result.
+SearchResult Search::run_controller(const SearchLimits& limits) {
+    stop_workers_.store(false, std::memory_order_relaxed);
     simulations_.store(0, std::memory_order_relaxed);
+    tickets_.store(0, std::memory_order_relaxed);
     started_at_ = std::chrono::steady_clock::now();
 
     maybe_expand(tree_->root(), tree_->root_board());
@@ -176,10 +213,15 @@ SearchResult Search::run(const SearchLimits& limits) {
     if ((*tree_)[tree_->root()].num_children == 0) {
         reason = "no_legal_moves";
     } else {
+        std::vector<std::thread> workers;
+        for (int i = 0; i < config_.workers; ++i)
+            workers.emplace_back([this, &limits] { worker_loop(limits); });
+
         // Convergence tracking: snapshot (cp, best move) every window/8
         // simulations; converged once 9 snapshots (= one full window) agree.
         const uint64_t stride = uint64_t(std::max(limits.convergence_window / 8, 1));
         std::deque<std::pair<int, std::string>> snapshots;
+        uint64_t last_snapshot = 0;
 
         for (;;) {
             if (stop_requested_.load(std::memory_order_relaxed)) {
@@ -196,10 +238,8 @@ SearchResult Search::run(const SearchLimits& limits) {
                 break;
             }
 
-            simulate();
-
-            if (limits.convergence_window > 0 &&
-                simulations_.load(std::memory_order_relaxed) % stride == 0) {
+            if (limits.convergence_window > 0 && sims - last_snapshot >= stride) {
+                last_snapshot = sims;
                 SearchStats snapshot = stats();
                 snapshots.emplace_back(snapshot.root_cp, snapshot.best_move);
                 if (snapshots.size() > 9) snapshots.pop_front();
@@ -219,7 +259,12 @@ SearchResult Search::run(const SearchLimits& limits) {
                     }
                 }
             }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+
+        stop_workers_.store(true, std::memory_order_relaxed);
+        for (std::thread& worker : workers) worker.join();
     }
 
     SearchResult result;
@@ -228,7 +273,47 @@ SearchResult Search::run(const SearchLimits& limits) {
     return result;
 }
 
+// Each worker keeps up to batch_size simulations in flight: it descends that
+// many paths (each parked on its virtual loss), then submits all their leaves
+// to the evaluation queue in one round-trip. This is what makes evaluation
+// batches form — and it amortizes the queue handshake, which would otherwise
+// dominate with a cheap evaluator.
+void Search::worker_loop(const SearchLimits& limits) {
+    const int max_in_flight = std::max(config_.batch_size, 1);
+    std::vector<std::vector<uint32_t>> paths;  // paths[i] belongs to boards[i]
+    std::vector<core::Board> boards;
+    std::vector<float> values;
+    bool tickets_exhausted = false;
+
+    while (!stop_workers_.load(std::memory_order_relaxed) && !tickets_exhausted) {
+        paths.clear();
+        boards.clear();
+        for (int k = 0; k < max_in_flight; ++k) {
+            // A ticket is one simulation start; with a simulation cap,
+            // exactly max_simulations tickets are handed out in total.
+            if (limits.max_simulations >= 0 &&
+                tickets_.fetch_add(1, std::memory_order_relaxed) >= limits.max_simulations) {
+                tickets_exhausted = true;
+                break;
+            }
+            descend(paths, boards);
+        }
+
+        if (!boards.empty()) {
+            values.assign(boards.size(), 0.0f);
+            queue_.evaluate(boards, values);
+            for (size_t i = 0; i < boards.size(); ++i) {
+                // The evaluator scores for the side to move = the opponent of
+                // the player who moved into the leaf.
+                backprop(paths[i], 1.0f - values[i]);
+                simulations_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+}
+
 SearchStats Search::stats() const {
+    if (!tree_) return {};
     const Tree& tree = *tree_;
     const Node& root = tree[tree.root()];
 

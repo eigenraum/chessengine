@@ -80,14 +80,20 @@ class Engine:
 
     def search(self, limits: SearchLimits | None = None) -> SearchResult:
         """Run a blocking search; returns the best move and search statistics."""
-        limits = limits or SearchLimits()
-        cxx_limits = _mcts.SearchLimits()
-        cxx_limits.max_time_ms = limits.max_time_ms
-        cxx_limits.max_simulations = limits.max_simulations
-        cxx_limits.convergence_window = limits.convergence_window
-        cxx_limits.convergence_cp_threshold = limits.convergence_cp_threshold
-        result = self._engine.search(cxx_limits)
+        result = self._engine.search(self._cxx_limits(limits))
         return SearchResult(**_stats_kwargs(result), stop_reason=result.stop_reason)
+
+    def start(self, limits: SearchLimits | None = None) -> None:
+        """Start a search in the background; poll stats(), finish with stop()."""
+        self._engine.start(self._cxx_limits(limits))
+
+    def stop(self) -> SearchResult:
+        """Interrupt a running search (no-op if already done) and collect its result."""
+        result = self._engine.stop()
+        return SearchResult(**_stats_kwargs(result), stop_reason=result.stop_reason)
+
+    def running(self) -> bool:
+        return self._engine.running()
 
     def stats(self) -> SearchStats:
         """Current search statistics; cheap, safe to call any time."""
@@ -96,3 +102,13 @@ class Engine:
     def request_stop(self) -> None:
         """Ask a running search to stop; it returns its result promptly."""
         self._engine.request_stop()
+
+    @staticmethod
+    def _cxx_limits(limits: SearchLimits | None):
+        limits = limits or SearchLimits()
+        cxx_limits = _mcts.SearchLimits()
+        cxx_limits.max_time_ms = limits.max_time_ms
+        cxx_limits.max_simulations = limits.max_simulations
+        cxx_limits.convergence_window = limits.convergence_window
+        cxx_limits.convergence_cp_threshold = limits.convergence_cp_threshold
+        return cxx_limits

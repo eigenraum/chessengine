@@ -3,7 +3,9 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <span>
 #include <thread>
+#include <vector>
 
 #include "eval/evaluator.h"
 
@@ -31,25 +33,28 @@ public:
         thread_.join();
     }
 
-    // Blocking: returns the win probability for the side to move in `board`.
-    float evaluate(const core::Board& board) {
-        Request request{&board};
+    // Blocking: evaluates boards[i] into values[i] (win probability for the
+    // side to move). One round-trip for the whole batch — a worker parks all
+    // its in-flight simulations here at once, which is what amortizes the
+    // handshake cost. Requests may be split across evaluator passes.
+    void evaluate(std::span<const core::Board> boards, std::span<float> values) {
+        int remaining = int(boards.size());
         std::unique_lock lock(mutex_);
-        pending_.push_back(&request);
+        for (size_t i = 0; i < boards.size(); ++i)
+            pending_.push_back({&boards[i], &values[i], &remaining});
         queue_cv_.notify_one();
-        done_cv_.wait(lock, [&] { return request.done; });
-        return request.value;
+        done_cv_.wait(lock, [&] { return remaining == 0; });
     }
 
 private:
     struct Request {
         const core::Board* board;
-        float value = 0.0f;
-        bool done = false;
+        float* value_out;
+        int* remaining;  // caller's outstanding count; guarded by mutex_
     };
 
     void run() {
-        std::vector<Request*> batch;
+        std::vector<Request> batch;
         std::vector<const core::Board*> boards;
         std::vector<float> values;
         for (;;) {
@@ -63,15 +68,15 @@ private:
             }
 
             boards.clear();
-            for (Request* request : batch) boards.push_back(request->board);
+            for (const Request& request : batch) boards.push_back(request.board);
             values.assign(batch.size(), 0.0f);
             evaluator_.evaluate(boards, values);
 
             {
                 std::lock_guard lock(mutex_);
                 for (size_t i = 0; i < batch.size(); ++i) {
-                    batch[i]->value = values[i];
-                    batch[i]->done = true;
+                    *batch[i].value_out = values[i];
+                    --*batch[i].remaining;
                 }
             }
             done_cv_.notify_all();
@@ -83,7 +88,7 @@ private:
     std::mutex mutex_;
     std::condition_variable queue_cv_;  // evaluator waits here for work
     std::condition_variable done_cv_;   // workers wait here for their result
-    std::deque<Request*> pending_;
+    std::deque<Request> pending_;
     bool stopping_ = false;
     std::thread thread_;
 };

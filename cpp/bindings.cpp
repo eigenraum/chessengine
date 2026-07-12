@@ -20,6 +20,9 @@ public:
 
     void set_position(const std::string& fen) { search_.set_position(Board(fen)); }
     mcts::SearchResult search(const mcts::SearchLimits& limits) { return search_.run(limits); }
+    void start(const mcts::SearchLimits& limits) { search_.start(limits); }
+    mcts::SearchResult stop() { return search_.stop(); }
+    bool running() const { return search_.running(); }
     mcts::SearchStats stats() const { return search_.stats(); }
     void request_stop() { search_.request_stop(); }
 
@@ -94,6 +97,9 @@ PYBIND11_MODULE(_mcts, m) {
         .def(py::init<const mcts::SearchConfig&>())
         .def("set_position", &Engine::set_position)
         .def("search", &Engine::search, py::call_guard<py::gil_scoped_release>())
+        .def("start", &Engine::start)
+        .def("stop", &Engine::stop, py::call_guard<py::gil_scoped_release>())
+        .def("running", &Engine::running)
         .def("stats", &Engine::stats)
         .def("request_stop", &Engine::request_stop);
 }
