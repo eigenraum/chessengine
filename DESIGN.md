@@ -25,8 +25,9 @@ chessengine/
 │       └── torch_eval.py     # (later) PyTorch policy/value evaluator
 ├── cpp/
 │   ├── core/                 # chess rules, no search knowledge
-│   │   ├── board.h/.cpp      # position representation, make/undo
-│   │   ├── movegen.h/.cpp    # legal move generation
+│   │   ├── board.h/.cpp      # position representation, copy-make apply
+│   │   ├── movegen.h/.cpp    # legal move generation, perft
+│   │   ├── attacks.h         # leaper tables + classical slider rays
 │   │   └── types.h           # Square, Move, Color, ...
 │   ├── mcts/
 │   │   ├── node.h            # Node layout

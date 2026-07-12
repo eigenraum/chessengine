@@ -8,6 +8,9 @@ find_package(pybind11 CONFIG REQUIRED)
 
 pybind11_add_module(_mcts
     cpp/bindings.cpp
+    cpp/core/board.cpp
+    cpp/core/movegen.cpp
 )
+target_include_directories(_mcts PRIVATE cpp)
 
 install(TARGETS _mcts LIBRARY DESTINATION chessengine)
