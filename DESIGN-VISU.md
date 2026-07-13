@@ -68,6 +68,9 @@ One page, two tabs (Board / Tree) sharing a bottom status bar.
   covers all of: human vs engine (either color), "switch sides mid-game", and
   engine vs engine (press Move! repeatedly; a small *auto* toggle keeps
   pressing it).
+- **Engine replies automatically:** an *engine replies* toggle (default ON)
+  starts a search after every human move — the common human-vs-engine flow
+  without clicking Move! each turn. Untick it to move for both sides.
 - While the engine thinks: eval bar beside the board (win prob + centipawns),
   sims/nodes/elapsed readout, PV shown as arrows on the board (first 2–3 PV
   plies) and as SAN text. A *Stop* button interrupts (`engine.stop()`; the

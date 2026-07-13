@@ -9,9 +9,14 @@ let state = null; // last server state message
 let lastStats = null;
 
 const board = new Board($("board"), {
-  onMove: (uci) => api("/api/move", { uci }),
+  onMove: async (uci) => {
+    const s = await api("/api/move", { uci });
+    // the common human-vs-engine flow: answer automatically (toggleable)
+    if (s && !s.outcome && $("autoreply").checked) api("/api/search/start");
+  },
 });
 
+/** POST helper; returns the new state, or null on error (message shown). */
 async function api(path, body) {
   const res = await fetch(path, {
     method: "POST",
@@ -21,7 +26,9 @@ async function api(path, body) {
   if (!res.ok) {
     const detail = (await res.json().catch(() => ({}))).detail;
     setMessage(detail || `${path} failed (${res.status})`);
+    return null;
   }
+  return res.json();
 }
 
 // ---- websocket ------------------------------------------------------------

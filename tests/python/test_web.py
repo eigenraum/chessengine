@@ -115,6 +115,12 @@ def test_websocket_streams_state_and_search(client):
                 assert event["played_move"]
                 assert event["stop_reason"] in {"time", "converged", "simulations"}
         assert {"state", "stats", "search_end"} <= seen
+        # the state broadcast right after search_end must already say idle,
+        # or the client leaves the board locked (regression)
+        event = ws.receive_json()
+        assert event["type"] == "state"
+        assert not event["searching"]
+        assert len(event["history"]) == 1
         # final state after the engine's move
         state = wait_for_idle(client)
         assert len(state["history"]) == 1

@@ -47,12 +47,15 @@ class Session:
         self._clients: set[WebSocket] = set()
         self._search_task: asyncio.Task | None = None
         self._play_on_stop = True
+        # Explicit flag, not _search_task.done(): the task itself broadcasts
+        # the post-search state and must already read searching == False then.
+        self._searching = False
 
     # ---- state -----------------------------------------------------------
 
     @property
     def searching(self) -> bool:
-        return self._search_task is not None and not self._search_task.done()
+        return self._searching
 
     def state(self) -> dict:
         outcome = self.game.outcome()
@@ -151,6 +154,7 @@ class Session:
             raise HTTPException(409, "game is over")
         self._play_on_stop = True
         self.engine.start(self.limits)
+        self._searching = True
         self._search_task = asyncio.create_task(self._run_search())
         await self.broadcast_state()
 
@@ -185,10 +189,13 @@ class Session:
 
         result = self.engine.stop()
         played = None
-        if self._play_on_stop and result.best_move and not self.game.is_over():
-            move = self.game.push(result.best_move)
-            self.engine.advance(move.uci())
-            played = move.uci()
+        try:
+            if self._play_on_stop and result.best_move and not self.game.is_over():
+                move = self.game.push(result.best_move)
+                self.engine.advance(move.uci())
+                played = move.uci()
+        finally:
+            self._searching = False  # before broadcasting: state must say idle
         rate = result.simulations / max(result.elapsed_ms / 1000, 1e-3)
         node_rate = result.nodes / max(result.elapsed_ms / 1000, 1e-3)
         await self.broadcast(
