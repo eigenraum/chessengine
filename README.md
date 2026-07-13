@@ -9,9 +9,14 @@ network later. Design and rationale live in [DESIGN.md](DESIGN.md).
 ## Quick start
 
 ```sh
-uv sync              # builds the C++ extension and installs everything
-uv run chessengine   # play against the engine in the terminal
-uv run pytest        # run the test suite
+uv sync                  # builds the C++ extension and installs everything
+uv run chessengine-web   # play against the engine in the browser
+uv run chessengine       # ... or in the terminal
+uv run pytest            # run the test suite
+```
+
+```
+uv run chessengine-web [--port PORT] [--time-ms MS] [--workers N] [--no-browser]
 ```
 
 ```

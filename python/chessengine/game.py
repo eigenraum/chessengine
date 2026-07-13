@@ -74,3 +74,7 @@ class Game:
 
     def last_move(self) -> chess.Move | None:
         return self._board.peek() if self._board.move_stack else None
+
+    def check_square(self) -> int | None:
+        """Square of the checked king (side to move), or None if not in check."""
+        return self._board.king(self._board.turn) if self._board.is_check() else None

@@ -1,0 +1,141 @@
+:root {
+  --bg: #262421;
+  --panel: #302e2b;
+  --text: #d8d5d1;
+  --muted: #8f8a84;
+  --accent: #6d9f4e;
+  --sq-light: #f0d9b5;
+  --sq-dark: #b58863;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.4 system-ui, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--panel);
+}
+header h1 { font-size: 1.1rem; margin: 0; }
+header #turn { color: var(--muted); margin-left: auto; }
+
+button {
+  background: #3d3a36;
+  color: var(--text);
+  border: 1px solid #4a4641;
+  border-radius: 4px;
+  padding: 0.35rem 0.8rem;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover { background: #4a4641; }
+button:disabled { opacity: 0.4; cursor: default; }
+#go { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+main {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+/* eval bar */
+#eval-bar {
+  position: relative;
+  width: 26px;
+  height: min(86vh, 640px);
+  background: #3a3734; /* black's share */
+  border-radius: 4px;
+  overflow: hidden;
+  align-self: stretch;
+}
+#eval-white {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  height: 50%;
+  background: #e8e6e3;
+  transition: height 0.3s;
+}
+#eval-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  font-size: 0.7rem;
+  color: #999;
+  mix-blend-mode: difference;
+}
+
+/* board */
+#board {
+  width: min(86vh, 640px);
+  height: min(86vh, 640px);
+  touch-action: none;
+  border-radius: 4px;
+}
+.sq-light { fill: var(--sq-light); }
+.sq-dark { fill: var(--sq-dark); }
+
+.piece { stroke-width: 1.3; stroke-linejoin: round; stroke-linecap: round; }
+.piece.white { fill: #f6f6f6; stroke: #33302c; }
+.piece.black { fill: #33302c; stroke: #dcd9d4; }
+.piece.dragging { pointer-events: none; opacity: 0.9; }
+
+.mark-last { fill: rgba(155, 199, 0, 0.4); }
+.mark-selected { fill: rgba(20, 85, 30, 0.45); }
+.mark-target { fill: rgba(20, 85, 30, 0.45); }
+.mark-capture { fill: none; stroke: rgba(20, 85, 30, 0.45); stroke-width: 5; }
+.mark-check { fill: rgba(220, 40, 30, 0.55); }
+
+.promo-backdrop { fill: rgba(0, 0, 0, 0.55); }
+.promo-cell { fill: #e8e6e3; stroke: #333; }
+.promo-choice { cursor: pointer; }
+.promo-choice:hover .promo-cell { fill: #fff; }
+
+/* side panel */
+aside {
+  width: 220px;
+  background: var(--panel);
+  border-radius: 4px;
+  padding: 0.75rem;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+aside h2 { font-size: 0.8rem; text-transform: uppercase; color: var(--muted); margin: 0 0 0.4rem; }
+#history {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 0.15rem 0.4rem;
+  margin-bottom: 0.8rem;
+}
+#history .movenum { color: var(--muted); }
+#pv { color: var(--muted); word-break: break-all; min-height: 2.8em; }
+
+footer {
+  display: flex;
+  gap: 1.5rem;
+  padding: 0.4rem 1rem;
+  background: var(--panel);
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+#message { margin-left: auto; color: var(--accent); }

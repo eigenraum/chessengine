@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>chessengine</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>chessengine</h1>
+    <nav>
+      <button id="new">New game</button>
+      <button id="flip">Flip</button>
+      <button id="go">▶ Move!</button>
+    </nav>
+    <span id="turn"></span>
+  </header>
+
+  <main>
+    <div id="eval-bar" title="white winning probability">
+      <div id="eval-white"></div>
+      <span id="eval-label">0.00</span>
+    </div>
+    <svg id="board"></svg>
+    <aside>
+      <h2>Moves</h2>
+      <div id="history"></div>
+      <h2>Principal variation</h2>
+      <div id="pv">—</div>
+    </aside>
+  </main>
+
+  <footer>
+    <span id="status-live">idle</span>
+    <span id="message"></span>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

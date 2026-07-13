@@ -110,9 +110,12 @@ What is drawn per node depends on its on-screen size:
 | L2 near | ~24–120 px | stat card: move (SAN), N (visits), win frequency W/N, score in cp, prior P |
 | L3 max | > ~120 px | L2 + rendered mini board of the node's position |
 
-- Layout: classic tidy/layered tree (root left, depth → x), children ordered by
-  visit count. Recomputed client-side per snapshot; nodes keyed by **move path**
-  (§5.2) so positions stay stable across updates and re-layouts animate gently.
+- Layout: classic tidy/layered tree (root left, depth → x). **Siblings are
+  ordered top-down by a sort criterion; the criterion is a pluggable
+  comparator in the layout code (a UI dropdown later), initially: visit
+  count** (most-visited child on top). Recomputed client-side per snapshot;
+  nodes keyed by **move path** (§5.2) so positions stay stable across updates
+  and re-layouts animate gently.
 - Hover: tooltip with full stats + UCT term breakdown (Q, exploration term) —
   cheap and very useful for understanding selection.
 - The **current PV is highlighted** as a colored path from the root.
@@ -240,7 +243,7 @@ The centipawn↔win-prob mapping constant (DESIGN.md §8) is served in
 
 ## 7. Milestones
 
-- **V1 — board view:** FastAPI server + SVG board; play vs engine with live
+- ✅ **V1 — board view:** FastAPI server + SVG board; play vs engine with live
   stats + eval bar (CLI feature parity in the browser). Move!, New, Stop.
 - **V2 — tree view, read-only:** `tree_view()` in C++, snapshot stream,
   canvas renderer with L0–L2, pan/zoom, PV highlight, status bar with nodes/s.
