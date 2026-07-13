@@ -253,12 +253,12 @@ The centipawn↔win-prob mapping constant (DESIGN.md §8) is served in
 - ✅ **V3 — interaction:** L3 board thumbnails, subtree detail-on-demand,
   click-to-explore, takeback via history click, parameter panel (both
   lifecycles), edit mode.
-- **V4 — tree exploration & analysis modes:** see §10. Fixes (thumbnail
+- ✅ **V4 — tree exploration & analysis modes:** see §10. Fixes (thumbnail
   positions, idle stats), renderer upgrades (L0 dots, PV move labels,
   collapsed mode, double-click zoom, hover info, navigation chips), and two
   new search modes (infinite analysis, step-by-step).
-- **V5 — polish:** PV arrows on the main board, eval history sparkline,
-  auto-play toggle.
+- **V5 — polish:** see §11. PV arrows on the main board, eval history
+  sparkline, auto-play toggle.
 
 Each milestone is shippable and demo-able on its own.
 
@@ -386,3 +386,57 @@ POST /api/play/best    {}                 # play best move from the live tree
 POST /api/tree/fens    {paths, fen}       # fen: base position of the client's tree
 {type: "tree", fen, ...}                  # tree events carry their root FEN
 ```
+
+## 11. V5 — Polish (accepted 2026-07-13)
+
+Three quality-of-life features on top of V4; no engine (C++) changes.
+
+### 11.1 PV arrows on the main board
+
+- While a search runs, the first **3 moves of the PV** are drawn as arrows on
+  the board (SVG layer above the pieces), in the accent green with
+  decreasing opacity (0.8 / 0.5 / 0.3) so the immediate move dominates.
+  Updated with every stats tick (~4 Hz); promotions render like normal moves.
+- **Lifecycle across the engine's move:** the final PV is rooted in the
+  *searched* position. When the search ends by playing `pv[0]`, the client
+  keeps the continuation `pv[1:]` as arrows on the new position — the
+  expected line stays visible until the position changes again (human move,
+  takeback, new game, edit), which clears the arrows.
+- Arrow geometry lives in a pure helper (node-testable); the board only
+  renders it. Arrows redraw on flip.
+
+### 11.2 Eval history sparkline
+
+- **Server-side history:** the session records one entry per evaluated
+  position — `{ply, white_win_prob, white_cp}`, ply = half-moves played
+  before the searched position — whenever a search ends with at least one
+  simulation (Move! searches, analysis stops, steps alike). A re-evaluation
+  of the same ply overwrites its entry. `goto` (takeback) truncates entries
+  beyond the rewind point; new game / edited position clears the list. The
+  full list rides on every `state` event, so reloads keep the curve.
+- **UI:** a small canvas under *Moves* in the side panel plots white's win
+  probability (y, 50 % midline) over plies (x). While a search runs, the
+  current eval is shown as a live hollow point at the current ply. Clicking
+  a point takes the game back to that ply (same as clicking the move).
+  Layout math is a pure function (node-tested).
+
+### 11.3 Auto-play toggle
+
+- An `autoplay` checkbox next to *engine replies*: after a search ends
+  **naturally** (stop_reason ≠ `interrupted`) having played a move, and the
+  game is not over, the client starts the next search after a ~0.6 s pause
+  (so the move is visible) — engine vs engine until game over.
+- Chaining on *natural* endings makes every interruption pause the loop:
+  **■ Stop** (which still plays the best-so-far move), New game, takeback,
+  or edit all end with `interrupted` and stop the chain; the checkbox stays
+  as the user set it. Checking it arms the loop; **▶ Move!** starts it.
+- Client-driven (the server keeps no autoplay state): the search_end → state
+  sequence triggers the next `/api/search/start`.
+
+### 11.4 API delta
+
+```
+{type: "state", eval_history: [{ply, white_win_prob, white_cp}, ...], ...}
+```
+
+No new endpoints; arrows and autoplay are pure client behavior.
