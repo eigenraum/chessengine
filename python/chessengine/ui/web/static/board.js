@@ -37,13 +37,15 @@ export function fenPlacement(fen) {
 export class Board {
   /**
    * @param {SVGSVGElement} svg
-   * @param {{onMove: (uci: string) => void}} callbacks
+   * @param {{onMove: (uci: string) => void, onEdit?: () => void}} callbacks
    */
-  constructor(svg, { onMove }) {
+  constructor(svg, { onMove, onEdit }) {
     this.svg = svg;
     this.onMove = onMove;
+    this.onEdit = onEdit; // placement changed while in edit mode
     this.orientation = "w";
     this.interactive = false;
+    this.editable = false; // edit mode: free placement, no rules (§3.2)
     this.legalMoves = []; // uci strings, from the server state
     this.placement = new Map();
     this.selected = null; // square name
@@ -78,6 +80,38 @@ export class Board {
   flip() {
     this.orientation = this.orientation === "w" ? "b" : "w";
     this.render();
+  }
+
+  // ---- edit mode (§3.2) ----------------------------------------------------
+
+  setEditable(on) {
+    this.editable = on;
+    this.selected = null;
+    this.render();
+  }
+
+  /** Put a piece on a square (replacing what's there) — palette drops. */
+  place(square, symbol) {
+    this.placement.set(square, symbol);
+    this.render();
+    this.onEdit?.();
+  }
+
+  clearBoard() {
+    this.placement.clear();
+    this.render();
+    this.onEdit?.();
+  }
+
+  setPlacement(map) {
+    this.placement = new Map(map);
+    this.render();
+    this.onEdit?.();
+  }
+
+  /** Square under a pointer event (or null) — public for palette drags. */
+  squareAt(event) {
+    return this._square(event);
   }
 
   // ---- geometry ----------------------------------------------------------
@@ -129,6 +163,7 @@ export class Board {
   _renderMarks() {
     const marks = this.layers.marks;
     marks.replaceChildren();
+    if (this.editable) return; // free placement: game marks don't apply
     if (this.lastMove) {
       for (const sq of [this.lastMove.slice(0, 2), this.lastMove.slice(2, 4)]) {
         const { x, y } = this._xy(sq);
@@ -177,7 +212,18 @@ export class Board {
   }
 
   _pointerDown(event) {
-    if (!this.interactive || this.drag) return;
+    if (this.drag) return;
+    if (this.editable) {
+      // free placement: pick up any piece, no rules
+      const square = this._square(event);
+      if (!square || !this.placement.has(square)) return;
+      this.svg.setPointerCapture(event.pointerId);
+      const node = this.layers.pieces.querySelector(`[data-square="${square}"]`);
+      this.drag = { from: square, node, moved: false };
+      node.classList.add("dragging");
+      return;
+    }
+    if (!this.interactive) return;
     const square = this._square(event);
     if (!square) return;
 
@@ -214,6 +260,15 @@ export class Board {
     this.drag = null;
     node.classList.remove("dragging");
     const target = this._square(event);
+    if (this.editable) {
+      if (!moved) return this.render(); // plain click: nothing to do
+      const symbol = this.placement.get(from);
+      this.placement.delete(from);
+      if (target) this.placement.set(target, symbol); // dropped off-board = removed
+      this.render();
+      this.onEdit?.();
+      return;
+    }
     if (moved && target && target !== from && this._targets(from).includes(target)) {
       this._submit(from, target);
     } else {

@@ -65,7 +65,7 @@ main {
 }
 main[hidden] { display: none; }
 
-#view-tree { padding: 0; align-items: stretch; }
+#view-tree { padding: 0; align-items: stretch; position: relative; }
 #tree {
   flex: 1;
   min-height: 0;
@@ -73,6 +73,42 @@ main[hidden] { display: none; }
   cursor: grab;
 }
 #tree:active { cursor: grabbing; }
+
+/* parameter panel (drawer over the tree view) */
+#params {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  background: var(--panel);
+  border: 1px solid #4a4641;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  max-width: 260px;
+}
+#params summary { padding: 0.35rem 0.7rem; cursor: pointer; color: var(--muted); }
+#params[open] summary { border-bottom: 1px solid #4a4641; }
+#params-body { padding: 0.6rem; }
+#params fieldset {
+  border: 1px solid #4a4641;
+  border-radius: 4px;
+  margin: 0 0 0.6rem;
+  padding: 0.4rem 0.6rem;
+}
+#params legend { color: var(--muted); padding: 0 0.3rem; font-size: 0.75rem; text-transform: uppercase; }
+#params .param { display: flex; justify-content: space-between; gap: 0.6rem; margin: 0.2rem 0; }
+#params .param span { color: var(--muted); }
+#params input {
+  width: 90px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid #4a4641;
+  border-radius: 3px;
+  padding: 0.1rem 0.3rem;
+  font: inherit;
+}
+#params small { display: block; color: var(--muted); margin-top: 0.3rem; }
+#params button { margin-top: 0.3rem; padding: 0.2rem 0.6rem; }
+.params-note { color: var(--accent); font-size: 0.8rem; margin: 0.2rem 0 0; }
 
 /* eval bar */
 #eval-bar {
@@ -149,7 +185,42 @@ aside h2 { font-size: 0.8rem; text-transform: uppercase; color: var(--muted); ma
   margin-bottom: 0.8rem;
 }
 #history .movenum { color: var(--muted); }
+#history .move { cursor: pointer; }
+#history .move:hover { color: var(--accent); text-decoration: underline; }
 #pv { color: var(--muted); word-break: break-all; min-height: 2.8em; }
+
+/* edit mode (§3.2): body.editing swaps eval bar/history for palette/editor */
+#palette { display: none; }
+#edit-panel { display: none; }
+#game-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+body.editing #eval-bar { display: none; }
+body.editing #game-panel { display: none; }
+body.editing #edit { background: var(--accent); border-color: var(--accent); color: #fff; }
+body.editing #go { display: none; }
+body.editing #palette {
+  display: grid;
+  grid-template-columns: repeat(2, 44px);
+  grid-auto-rows: 44px;
+  gap: 2px;
+  align-self: center;
+}
+body.editing #edit-panel { display: block; }
+.spare { cursor: grab; border-radius: 4px; }
+.spare:hover { background: #3d3a36; }
+body.spare-dragging { cursor: grabbing; }
+#edit-panel .edit-row { display: flex; gap: 0.5rem; align-items: center; margin: 0.4rem 0; flex-wrap: wrap; }
+#edit-panel label { display: flex; align-items: center; gap: 0.25rem; color: var(--muted); font-size: 0.9rem; }
+#edit-panel input[type="checkbox"]:disabled + span { opacity: 0.4; }
+#edit-fen {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid #4a4641;
+  border-radius: 3px;
+  padding: 0.25rem 0.4rem;
+  font: 0.78rem ui-monospace, monospace;
+  margin: 0.3rem 0;
+}
 
 footer {
   display: flex;

@@ -3,26 +3,18 @@
 
 import { Board } from "./board.js";
 import { TreeView } from "./tree.js";
+import { EditMode } from "./edit.js";
+import { ParamsPanel } from "./params.js";
 
 const $ = (id) => document.getElementById(id);
 
 let state = null; // last server state message
 let lastStats = null;
 
-const treeView = new TreeView($("tree"));
-
-const board = new Board($("board"), {
-  onMove: async (uci) => {
-    const s = await api("/api/move", { uci });
-    // the common human-vs-engine flow: answer automatically (toggleable)
-    if (s && !s.outcome && $("autoreply").checked) api("/api/search/start");
-  },
-});
-
-/** POST helper; returns the new state, or null on error (message shown). */
-async function api(path, body) {
+/** REST helper; returns the response JSON, or null on error (message shown). */
+async function api(path, body, method = "POST") {
   const res = await fetch(path, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
   });
@@ -33,6 +25,37 @@ async function api(path, body) {
   }
   return res.json();
 }
+
+const treeView = new TreeView($("tree"), {
+  // click-to-explore (§4.2): the clicked node's moves become real game moves
+  onNodeClick: (path) => {
+    if (!confirm(`Play ${path.join(" ")} into the game?`)) return;
+    api("/api/goto", { path });
+  },
+  fetchFens: (paths) => api("/api/tree/fens", { paths }),
+  fetchDetail: (path) => api("/api/tree/detail", { root_path: path, max_nodes: 2000 }),
+});
+
+const board = new Board($("board"), {
+  onMove: async (uci) => {
+    const s = await api("/api/move", { uci });
+    // the common human-vs-engine flow: answer automatically (toggleable)
+    if (s && !s.outcome && $("autoreply").checked) api("/api/search/start");
+  },
+});
+
+const editMode = new EditMode(board, {
+  apply: (fen) => api("/api/position", { fen }),
+  onExit: async () => renderState(await fetch("/api/state").then((r) => r.json())),
+});
+
+const paramsPanel = new ParamsPanel($("params-body"), {
+  put: async (body) => {
+    const config = await api("/api/config", body, "PUT");
+    if (config) paramsPanel.render(config);
+    return config;
+  },
+});
 
 // ---- websocket ------------------------------------------------------------
 
@@ -50,6 +73,7 @@ function handle(event) {
   if (event.type === "state") renderState(event);
   else if (event.type === "stats") renderStats(event);
   else if (event.type === "tree") treeView.setTree(event);
+  else if (event.type === "config") paramsPanel.render(event);
   else if (event.type === "search_end") {
     renderStats(event);
     setMessage(
@@ -64,8 +88,10 @@ function handle(event) {
 
 function renderState(s) {
   state = s;
-  const humanTurn = !s.searching && !s.outcome;
-  board.setState(s, humanTurn);
+  if (!editMode.active) {
+    const humanTurn = !s.searching && !s.outcome;
+    board.setState(s, humanTurn);
+  }
 
   $("go").textContent = s.searching ? "■ Stop" : "▶ Move!";
   $("go").disabled = Boolean(s.outcome);
@@ -85,6 +111,8 @@ function renderState(s) {
     const span = document.createElement("span");
     span.className = "move";
     span.textContent = san;
+    // takeback (§3.3): rewind the game to just after this move
+    span.addEventListener("click", () => api("/api/goto", { ply: i + 1 }));
     list.appendChild(span);
   });
   list.scrollTop = list.scrollHeight;
@@ -123,6 +151,13 @@ $("go").addEventListener("click", () =>
 );
 $("new").addEventListener("click", () => api("/api/new"));
 $("flip").addEventListener("click", () => board.flip());
+$("edit").addEventListener("click", () => {
+  if (editMode.active) return editMode.exit();
+  if (!state) return;
+  if (state.searching) return setMessage("stop the search before editing");
+  showTab("board");
+  editMode.enter(state.fen);
+});
 
 // ---- tabs -------------------------------------------------------------------
 
@@ -147,5 +182,6 @@ $("tab-tree").addEventListener("click", () => showTab("tree"));
 
 // render immediately from REST; the socket takes over for live updates
 fetch("/api/state").then((r) => r.json()).then(renderState);
+fetch("/api/config").then((r) => r.json()).then((c) => paramsPanel.render(c));
 if (location.hash === "#tree") showTab("tree");
 connect();

@@ -129,20 +129,27 @@ class Session:
             "searching": self.searching,
         }
 
-    def tree_fens(self, paths: list[list[str]]) -> list[str | None]:
-        """FENs for tree nodes (L3 thumbnails, §5.2): replay each move path
-        from the current position. None for paths that don't replay (the tree
-        is racy while searching; the client just skips those thumbnails)."""
+    def tree_fens(self, paths: list[list[str]]) -> dict:
+        """FENs (plus the last move as SAN) for tree nodes (L3 thumbnails,
+        §5.2): replay each move path from the current position. None for
+        paths that don't replay (the tree is racy while searching; the client
+        just skips those thumbnails)."""
         fens: list[str | None] = []
+        sans: list[str | None] = []
         for path in paths:
             board = chess.Board(self.game.fen())
             try:
+                san = None
                 for uci in path:
-                    board.push(board.parse_uci(uci))
+                    move = board.parse_uci(uci)
+                    san = board.san(move)
+                    board.push(move)
                 fens.append(board.fen())
+                sans.append(san)
             except ValueError:
                 fens.append(None)
-        return fens
+                sans.append(None)
+        return {"fens": fens, "sans": sans}
 
     def _pv_san(self, pv: list[str]) -> list[str]:
         """PV as SAN for display; stats are racy, so stop at the first move
@@ -411,7 +418,7 @@ def create_app(session: Session | None = None) -> FastAPI:
 
     @app.post("/api/tree/fens")
     async def post_tree_fens(req: TreeFensRequest) -> dict:
-        return {"fens": session.tree_fens(req.paths)}
+        return session.tree_fens(req.paths)
 
     @app.post("/api/search/start")
     async def post_search_start() -> dict:

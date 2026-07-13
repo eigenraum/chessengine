@@ -64,6 +64,7 @@ tree updates are ThreadSanitizer-clean (see below).
   (`core/` rules, `mcts/` search, `eval/` evaluators), tests in `tests/`.
 - After changing C++ sources: `uv sync --reinstall-package chessengine`.
 - Deep perft tests: `uv run pytest -m slow`.
+- Frontend pure-function tests: `node --test 'tests/js/*.test.mjs'`.
 - ThreadSanitizer stress run:
 
   ```sh

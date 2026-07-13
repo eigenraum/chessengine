@@ -209,7 +209,9 @@ def test_tree_detail_and_fens(client):
 
     fens = client.post("/api/tree/fens", json={"paths": [[], [child_move], ["e2e5"]]}).json()
     assert fens["fens"][0] == client.get("/api/state").json()["fen"]
+    assert fens["sans"][0] is None  # root: no move leads into it
     assert fens["fens"][1] is not None
+    assert fens["sans"][1]  # SAN of the move into the node, for card labels
     assert fens["fens"][2] is None  # unplayable path -> null, not an error
 
 

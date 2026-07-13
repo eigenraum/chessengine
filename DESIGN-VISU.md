@@ -110,8 +110,8 @@ What is drawn per node depends on its on-screen size:
 |---|---|---|
 | L0 far | < ~3 px | edges only — tree silhouette to judge breadth/depth; edge alpha/width ∝ visits |
 | L1 mid | ~3–24 px | disc, **fill = side to move at that node** (white/black), radius ∝ log(visits); edge width ∝ visits |
-| L2 near | ~24–120 px | stat card: move (UCI for now — SAN needs positions and comes with the V3 FEN endpoint), N (visits), win frequency W/N, score in cp, prior P |
-| L3 max | > ~120 px | L2 + rendered mini board of the node's position |
+| L2 near | ~24–120 px | stat card: move (UCI — SAN needs positions, which only L3 fetches), N (visits), win frequency W/N, score in cp, prior P |
+| L3 max | > ~120 px | L2 (move as SAN, via the FEN endpoint) + rendered mini board of the node's position |
 
 - Layout: classic tidy/layered tree (root left, depth → x). **Siblings are
   ordered top-down by a sort criterion; the criterion is a pluggable
@@ -250,8 +250,9 @@ The centipawn↔win-prob mapping constant (DESIGN.md §8) is served in
   stats + eval bar (CLI feature parity in the browser). Move!, New, Stop.
 - ✅ **V2 — tree view, read-only:** `tree_view()` in C++, snapshot stream,
   canvas renderer with L0–L2, pan/zoom, PV highlight, status bar with nodes/s.
-- **V3 — interaction:** L3 board thumbnails, subtree detail-on-demand,
-  click-to-explore, parameter panel (both lifecycles), edit mode.
+- ✅ **V3 — interaction:** L3 board thumbnails, subtree detail-on-demand,
+  click-to-explore, takeback via history click, parameter panel (both
+  lifecycles), edit mode.
 - **V4 — polish:** PV arrows on the main board, eval history sparkline,
   auto-play toggle, hover UCT breakdown.
 
