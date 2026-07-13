@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import threading
 import time
 import webbrowser
@@ -27,6 +28,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 STATS_INTERVAL_S = 0.25  # ~4 Hz stats stream (DESIGN-VISU.md section 5.1)
 TREE_EVERY_TICKS = 4  # tree snapshots at ~1 Hz (section 5.2)
 TREE_MAX_NODES = 20_000  # node budget per snapshot
+CP_SCALE = 400.0  # centipawn<->win-prob logistic scale (cpp/eval/evaluator.h)
 
 
 class Session:
@@ -43,7 +45,8 @@ class Session:
         limits: SearchLimits | None = None,
     ) -> None:
         self.game = Game()
-        self.engine = Engine(config)
+        self.config = config or EngineConfig()
+        self.engine = Engine(self.config)
         self.engine.set_position(self.game.fen())
         self.limits = limits or SearchLimits()
         self._clients: set[WebSocket] = set()
@@ -98,12 +101,15 @@ class Session:
             "nodes_per_s": round(nodes_per_s),
         }
 
-    def tree_event(self) -> dict:
-        """Bounded snapshot of the search tree; safe while searching."""
-        view = self.engine.tree_view(max_nodes=TREE_MAX_NODES)
+    def tree_event(
+        self, root_path: list[str] | None = None, max_nodes: int = TREE_MAX_NODES
+    ) -> dict:
+        """Bounded snapshot of the (sub)tree at root_path; safe while searching."""
+        view = self.engine.tree_view(max_nodes=max_nodes, root_path=root_path)
         return {
             "type": "tree",
             "turn": "w" if self.game.turn == chess.WHITE else "b",
+            "root_path": root_path or [],
             "parent": view.parent,
             "move": view.move,
             "visits": view.visits,
@@ -111,6 +117,32 @@ class Session:
             "prior": view.prior,
             "children_total": view.children_total,
         }
+
+    def config_event(self) -> dict:
+        """Both parameter groups (§4.3) plus the eval-mapping constant."""
+        return {
+            "type": "config",
+            "limits": dataclasses.asdict(self.limits),
+            "structural": dataclasses.asdict(self.config),
+            "cp_scale": CP_SCALE,
+            # a running search still uses the limits it started with
+            "searching": self.searching,
+        }
+
+    def tree_fens(self, paths: list[list[str]]) -> list[str | None]:
+        """FENs for tree nodes (L3 thumbnails, §5.2): replay each move path
+        from the current position. None for paths that don't replay (the tree
+        is racy while searching; the client just skips those thumbnails)."""
+        fens: list[str | None] = []
+        for path in paths:
+            board = chess.Board(self.game.fen())
+            try:
+                for uci in path:
+                    board.push(board.parse_uci(uci))
+                fens.append(board.fen())
+            except ValueError:
+                fens.append(None)
+        return fens
 
     def _pv_san(self, pv: list[str]) -> list[str]:
         """PV as SAN for display; stats are racy, so stop at the first move
@@ -159,6 +191,67 @@ class Session:
             raise HTTPException(400, f"invalid FEN: {exc}") from None
         self.engine.set_position(self.game.fen())
         await self.broadcast_state()
+
+    async def set_position(self, fen: str) -> None:
+        """Apply an edited position (§3.2): validated, tree dropped."""
+        await self.stop_search(play_move=False)
+        try:
+            board = chess.Board(fen)
+        except ValueError as exc:
+            raise HTTPException(400, f"invalid FEN: {exc}") from None
+        if not board.is_valid():
+            reasons = [flag.name.lower() for flag in chess.Status if flag & board.status()]
+            raise HTTPException(400, f"invalid position: {', '.join(reasons)}")
+        self.game = Game(board.fen())
+        self.engine.set_position(self.game.fen())
+        await self.broadcast_state()
+        await self.broadcast(self.tree_event())
+
+    async def goto_ply(self, ply: int) -> None:
+        """Takeback (§3.3): rewind the game; the engine tree is dropped."""
+        await self.stop_search(play_move=False)
+        try:
+            self.game.rewind(ply)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        self.engine.set_position(self.game.fen())
+        await self.broadcast_state()
+        await self.broadcast(self.tree_event())
+
+    async def goto_path(self, path: list[str]) -> None:
+        """Click-to-explore (§4.2): play the clicked node's moves into the
+        real game; each hop keeps the matching subtree (tree reuse)."""
+        await self.stop_search(play_move=False)
+        board = chess.Board(self.game.fen())  # validate before mutating
+        try:
+            for uci in path:
+                board.push(board.parse_uci(uci))
+        except ValueError as exc:
+            raise HTTPException(400, f"path not playable: {exc}") from None
+        for uci in path:
+            applied = self.game.push(uci)
+            self.engine.advance(applied.uci())
+        await self.broadcast_state()
+        await self.broadcast(self.tree_event())
+
+    async def update_config(
+        self, limits: dict | None = None, structural: dict | None = None
+    ) -> None:
+        """The two §4.3 lifecycles: limits apply at the next search start;
+        structural changes rebuild the engine (tree dropped)."""
+        try:
+            if limits:
+                self.limits = dataclasses.replace(self.limits, **limits)
+            if structural:
+                self.config = dataclasses.replace(self.config, **structural)
+        except TypeError as exc:
+            raise HTTPException(400, f"unknown parameter: {exc}") from None
+        if structural:
+            await self.stop_search(play_move=False)
+            self.engine = Engine(self.config)
+            self.engine.set_position(self.game.fen())
+            await self.broadcast(self.tree_event())
+        await self.broadcast(self.config_event())
 
     async def start_search(self) -> None:
         """The Move! button. While a search runs it acts as Stop (accepted
@@ -239,6 +332,29 @@ class NewGameRequest(BaseModel):
     fen: str | None = None
 
 
+class PositionRequest(BaseModel):
+    fen: str
+
+
+class GotoRequest(BaseModel):
+    ply: int | None = None  # takeback: rewind to after `ply` half-moves
+    path: list[str] | None = None  # explore: play these moves from here
+
+
+class ConfigRequest(BaseModel):
+    limits: dict | None = None
+    structural: dict | None = None
+
+
+class TreeDetailRequest(BaseModel):
+    root_path: list[str]
+    max_nodes: int = TREE_MAX_NODES
+
+
+class TreeFensRequest(BaseModel):
+    paths: list[list[str]]
+
+
 def create_app(session: Session | None = None) -> FastAPI:
     session = session or Session()
     app = FastAPI(title="chessengine")
@@ -261,9 +377,41 @@ def create_app(session: Session | None = None) -> FastAPI:
         await session.new_game(req.fen if req else None)
         return session.state()
 
+    @app.post("/api/position")
+    async def post_position(req: PositionRequest) -> dict:
+        await session.set_position(req.fen)
+        return session.state()
+
+    @app.post("/api/goto")
+    async def post_goto(req: GotoRequest) -> dict:
+        if (req.ply is None) == (req.path is None):
+            raise HTTPException(400, "exactly one of ply or path required")
+        if req.ply is not None:
+            await session.goto_ply(req.ply)
+        else:
+            await session.goto_path(req.path or [])
+        return session.state()
+
+    @app.get("/api/config")
+    async def get_config() -> dict:
+        return session.config_event()
+
+    @app.put("/api/config")
+    async def put_config(req: ConfigRequest) -> dict:
+        await session.update_config(req.limits, req.structural)
+        return session.config_event()
+
     @app.get("/api/tree")
     async def get_tree() -> dict:
         return session.tree_event()
+
+    @app.post("/api/tree/detail")
+    async def post_tree_detail(req: TreeDetailRequest) -> dict:
+        return session.tree_event(req.root_path, req.max_nodes)
+
+    @app.post("/api/tree/fens")
+    async def post_tree_fens(req: TreeFensRequest) -> dict:
+        return {"fens": session.tree_fens(req.paths)}
 
     @app.post("/api/search/start")
     async def post_search_start() -> dict:

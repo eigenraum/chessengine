@@ -134,6 +134,85 @@ def test_websocket_streams_state_and_search(client):
         assert len(state["history"]) == 1
 
 
+def test_goto_ply_takeback(client):
+    for uci in ["e2e4", "e7e5", "g1f3"]:
+        client.post("/api/move", json={"uci": uci})
+    state = client.post("/api/goto", json={"ply": 1}).json()
+    assert state["history"] == ["e4"]
+    assert state["turn"] == "b"
+    assert client.post("/api/goto", json={"ply": 5}).status_code == 400
+    # rewound game keeps playing fine (engine tree was re-rooted)
+    state = client.post("/api/move", json={"uci": "e7e5"}).json()
+    assert state["history"] == ["e4", "e5"]
+
+
+def test_goto_path_explores_forward(client):
+    state = client.post("/api/goto", json={"path": ["e2e4", "e7e5"]}).json()
+    assert state["history"] == ["e4", "e5"]
+    assert state["turn"] == "w"
+    assert client.post("/api/goto", json={"path": ["e2e4"]}).status_code == 400
+    assert client.post("/api/goto", json={}).status_code == 400
+    assert client.post("/api/goto", json={"ply": 0, "path": []}).status_code == 400
+
+
+def test_position_applies_valid_fen(client):
+    fen = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1"
+    state = client.post("/api/position", json={"fen": fen}).json()
+    assert state["fen"] == fen
+    assert client.post("/api/position", json={"fen": "not a fen"}).status_code == 400
+    # parseable but invalid: no black king
+    response = client.post("/api/position", json={"fen": "8/8/8/8/8/8/8/4K3 w - - 0 1"})
+    assert response.status_code == 400
+    assert "king" in response.json()["detail"]
+
+
+def test_config_roundtrip(client):
+    config = client.get("/api/config").json()
+    assert config["limits"]["max_time_ms"] == 3000
+    assert config["structural"]["workers"] == 1
+    assert config["cp_scale"] == 400.0
+
+    config = client.put("/api/config", json={"limits": {"c_puct": 2.0}}).json()
+    assert config["limits"]["c_puct"] == 2.0
+    assert config["limits"]["max_time_ms"] == 3000  # untouched
+    assert client.put("/api/config", json={"limits": {"nope": 1}}).status_code == 400
+
+
+def test_config_structural_rebuilds_engine(client):
+    client.post("/api/search/start")
+    wait_for_idle(client)
+    assert len(client.get("/api/tree").json()["parent"]) > 10
+    config = client.put("/api/config", json={"structural": {"workers": 2}}).json()
+    assert config["structural"]["workers"] == 2
+    # rebuild dropped the tree: bare root at the current position
+    assert client.get("/api/tree").json()["parent"] == [-1]
+    # the rebuilt engine still searches and plays
+    client.post("/api/search/start")
+    state = wait_for_idle(client)
+    assert len(state["history"]) == 2
+
+
+def test_tree_detail_and_fens(client):
+    client.post("/api/search/start")
+    wait_for_idle(client)
+    tree = client.get("/api/tree").json()
+    assert tree["root_path"] == []
+    # the engine played its move, so the root moved one ply down; ask for the
+    # subtree of the current root's best child
+    child_move = tree["move"][1]
+    detail = client.post(
+        "/api/tree/detail", json={"root_path": [child_move], "max_nodes": 50}
+    ).json()
+    assert detail["root_path"] == [child_move]
+    assert detail["move"][0] == ""
+    assert len(detail["parent"]) <= 50
+
+    fens = client.post("/api/tree/fens", json={"paths": [[], [child_move], ["e2e5"]]}).json()
+    assert fens["fens"][0] == client.get("/api/state").json()["fen"]
+    assert fens["fens"][1] is not None
+    assert fens["fens"][2] is None  # unplayable path -> null, not an error
+
+
 def test_tree_endpoint(client):
     tree = client.get("/api/tree").json()
     assert tree["type"] == "tree"
