@@ -13,6 +13,10 @@ import { fenPlacement } from "./board.js";
 
 const DX = 140; // world units per ply (depth → x)
 const ROW = 16; // world units per leaf row (y)
+// fit() floor: never auto-zoom rows below disc level (§4.1 L1, rowPx ≥ 3).
+// Crushing rows to cram a large tree into the canvas made nodes sub-pixel
+// and dropped them into L0, where _hitTest() has nothing to hover at all.
+const MIN_ROW_PX = 14;
 
 // Sibling order, top-down. Pluggable criterion (a UI dropdown later);
 // initially: visit count, most-visited child on top.
@@ -381,7 +385,7 @@ export class TreeView {
     const worldW = this.layout.maxX + DX;
     const worldH = Math.max(this.layout.rows * ROW, ROW);
     this.tf.kx = Math.min((width - 80) / worldW, 1.3);
-    this.tf.ky = Math.min((height - 80) / worldH, 1.5);
+    this.tf.ky = Math.max(Math.min((height - 80) / worldH, 1.5), MIN_ROW_PX / ROW);
     this.tf.x = 40;
     this.tf.y = height / 2 - (worldH / 2) * this.tf.ky;
   }
