@@ -42,12 +42,28 @@ int main(int argc, char** argv) {
                     (unsigned long long)result.nodes, (long long)result.elapsed_ms);
     }
 
-    // Exercise the async interrupt path too.
+    // Exercise the async interrupt path, with concurrent live tree views —
+    // the GUI's read path — hammering the tree while the workers write.
     search.set_position(core::Board(fens[0]));
     limits.max_simulations = -1;
     search.start(limits);
+    size_t viewed = 0;
+    for (int i = 0; i < 200 && search.running(); ++i)
+        viewed += search.tree_view(20000, 1, {}).parent.size();
     mcts::SearchResult result = search.stop();
-    std::printf("interrupt: %s after %llu sims\n", result.stop_reason.c_str(),
-                (unsigned long long)result.simulations);
+    std::printf("interrupt: %s after %llu sims (%zu rows streamed to tree views)\n",
+                result.stop_reason.c_str(), (unsigned long long)result.simulations,
+                viewed);
+
+    // And tree reuse: search, advance along the best move, search again.
+    limits.max_simulations = simulations;
+    search.set_position(core::Board(fens[0]));
+    for (int ply = 0; ply < 6; ++ply) {
+        result = search.run(limits);
+        if (result.best_move.empty()) break;
+        search.advance(core::Move::from_uci(result.best_move));
+        std::printf("advance %-6s -> %llu nodes carried over\n", result.best_move.c_str(),
+                    (unsigned long long)search.stats().nodes);
+    }
     return 0;
 }

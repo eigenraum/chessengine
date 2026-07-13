@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <deque>
+#include <queue>
 #include <stdexcept>
 
 #include "core/movegen.h"
@@ -46,6 +47,134 @@ Search::Search(const SearchConfig& config, eval::Evaluator& evaluator)
 
 void Search::set_position(const core::Board& board) {
     tree_ = std::make_unique<Tree>(board, config_.max_nodes);
+}
+
+void Search::advance(core::Move move) {
+    if (!tree_) throw std::logic_error("no position set");
+    if (running()) throw std::logic_error("cannot advance while a search is running");
+
+    bool legal = false;
+    for (core::Move candidate : core::generate_legal(tree_->root_board()))
+        if (candidate == move) legal = true;
+    if (!legal) throw std::invalid_argument("illegal move: " + move.uci());
+
+    core::Board board = tree_->root_board();
+    board.apply(move);
+    tree_ = extract_subtree(*tree_, move, board, config_.max_nodes);
+}
+
+TreeSnapshot Search::snapshot(uint32_t min_visits, int max_depth) const {
+    TreeSnapshot snap;
+    if (!tree_) return snap;
+    if (running()) throw std::logic_error("cannot snapshot while a search is running");
+
+    struct Item {
+        uint32_t index;
+        core::Board board;
+        int depth;
+    };
+    const Tree& tree = *tree_;
+    std::vector<Item> stack{{tree.root(), tree.root_board(), 0}};
+    while (!stack.empty()) {
+        Item item = std::move(stack.back());
+        stack.pop_back();
+        const Node& node = tree[item.index];
+        const uint32_t visits = node.visits.load(std::memory_order_relaxed);
+
+        snap.fens.push_back(item.board.fen());
+        snap.visit_counts.push_back(visits);
+        // Stored Q is from the perspective of the player who moved into the
+        // node; the training row wants the side to move in fens[i].
+        const double q =
+            visits ? 1.0 - node.value_sum.load(std::memory_order_relaxed) / visits : 0.5;
+        snap.values.push_back(float(q));
+
+        std::vector<std::string> moves;
+        std::vector<uint32_t> child_visits;
+        if (node.expand_state.load(std::memory_order_relaxed) == ExpandState::EXPANDED) {
+            for (uint32_t i = 0; i < node.num_children; ++i) {
+                const uint32_t child_index = node.first_child + i;
+                const Node& child = tree[child_index];
+                const uint32_t n = child.visits.load(std::memory_order_relaxed);
+                if (n == 0) continue;
+                moves.push_back(child.move.uci());
+                child_visits.push_back(n);
+                if (n >= min_visits && item.depth < max_depth) {
+                    core::Board board = item.board;
+                    board.apply(child.move);
+                    stack.push_back({child_index, board, item.depth + 1});
+                }
+            }
+        }
+        snap.moves.push_back(std::move(moves));
+        snap.child_visits.push_back(std::move(child_visits));
+    }
+    return snap;
+}
+
+TreeView Search::tree_view(uint32_t max_nodes, uint32_t min_visits,
+                           const std::vector<core::Move>& root_path) const {
+    TreeView view;
+    if (!tree_) return view;
+    const Tree& tree = *tree_;
+
+    // Resolve root_path by matching child moves; empty view if any hop is
+    // missing (the client falls back to requesting the search root).
+    uint32_t start = tree.root();
+    for (core::Move move : root_path) {
+        const Node& node = tree[start];
+        if (node.expand_state.load(std::memory_order_acquire) != ExpandState::EXPANDED)
+            return view;
+        uint32_t next = Tree::NO_NODE;
+        for (uint32_t i = 0; i < node.num_children; ++i)
+            if (tree[node.first_child + i].move == move) next = node.first_child + i;
+        if (next == Tree::NO_NODE) return view;
+        start = next;
+    }
+
+    // Best-first walk: always emit the most-visited frontier node next.
+    // Children enter the frontier only after their parent was emitted, so
+    // parent[] indices always point at earlier rows.
+    struct Item {
+        uint32_t visits;
+        uint32_t index;
+        int32_t parent_row;
+    };
+    auto by_visits = [](const Item& a, const Item& b) { return a.visits < b.visits; };
+    std::priority_queue<Item, std::vector<Item>, decltype(by_visits)> frontier(by_visits);
+    frontier.push({tree[start].visits.load(std::memory_order_relaxed), start, -1});
+
+    while (!frontier.empty() && view.parent.size() < max_nodes) {
+        const Item item = frontier.top();
+        frontier.pop();
+        const Node& node = tree[item.index];
+        const int32_t row = int32_t(view.parent.size());
+
+        view.parent.push_back(item.parent_row);
+        view.move.push_back(item.parent_row < 0 ? std::string() : node.move.uci());
+        view.visits.push_back(item.visits);
+        const double q = item.visits
+                             ? node.value_sum.load(std::memory_order_relaxed) / item.visits
+                             : 0.5;
+        view.q.push_back(float(q));
+        view.prior.push_back(node.prior);
+
+        uint32_t children_total = 0;
+        // Acquire pairs with the release store in maybe_expand: only then are
+        // first_child/num_children and the children's move/prior published.
+        if (node.expand_state.load(std::memory_order_acquire) == ExpandState::EXPANDED) {
+            children_total = node.num_children;
+            for (uint32_t i = 0; i < node.num_children; ++i) {
+                const uint32_t child = node.first_child + i;
+                const uint32_t child_visits =
+                    tree[child].visits.load(std::memory_order_relaxed);
+                if (child_visits >= std::max(min_visits, 1u))
+                    frontier.push({child_visits, child, row});
+            }
+        }
+        view.children_total.push_back(children_total);
+    }
+    return view;
 }
 
 void Search::maybe_expand(uint32_t index, const core::Board& board) {
@@ -94,7 +223,7 @@ uint32_t Search::select_child(const Node& parent) const {
         const double q =
             n > 0 ? child.value_sum.load(std::memory_order_relaxed) / n : 0.5;
         const double score =
-            q + config_.c_puct * child.prior * sqrt_parent_visits / (1.0 + n);
+            q + limits_.c_puct * child.prior * sqrt_parent_visits / (1.0 + n);
         if (score > best_score) {
             best_score = score;
             best_index = index;
@@ -113,7 +242,7 @@ void Search::descend(std::vector<std::vector<uint32_t>>& paths,
     core::Board board = tree.root_board();
     std::vector<uint32_t> path{tree.root()};
     std::vector<core::Board> boards{board};
-    tree[tree.root()].virtual_loss.fetch_add(config_.virtual_loss,
+    tree[tree.root()].virtual_loss.fetch_add(limits_.virtual_loss,
                                              std::memory_order_relaxed);
 
     // Values are from the perspective of the player who moved INTO the leaf
@@ -149,7 +278,7 @@ void Search::descend(std::vector<std::vector<uint32_t>>& paths,
 
         uint32_t child_index = select_child(node);
         Node& child = tree[child_index];
-        child.virtual_loss.fetch_add(config_.virtual_loss, std::memory_order_relaxed);
+        child.virtual_loss.fetch_add(limits_.virtual_loss, std::memory_order_relaxed);
         board.apply(child.move);
         path.push_back(child_index);
         boards.push_back(board);
@@ -165,7 +294,7 @@ void Search::backprop(const std::vector<uint32_t>& path, float leaf_value) {
         Node& node = (*tree_)[*it];
         node.visits.fetch_add(1, std::memory_order_relaxed);
         node.value_sum.fetch_add(double(value), std::memory_order_relaxed);
-        node.virtual_loss.fetch_sub(config_.virtual_loss, std::memory_order_relaxed);
+        node.virtual_loss.fetch_sub(limits_.virtual_loss, std::memory_order_relaxed);
         value = 1.0f - value;  // one ply up, the other player's perspective
     }
 }
@@ -186,7 +315,13 @@ void Search::start(const SearchLimits& limits) {
     if (running()) throw std::logic_error("search already running");
     if (controller_.joinable()) controller_.join();  // reap a finished search
 
+    limits_ = limits;
     stop_requested_.store(false, std::memory_order_relaxed);
+    // Reset the counters here, not on the controller thread: stats() may be
+    // polled right after start() and must not see the previous search's tally.
+    simulations_.store(0, std::memory_order_relaxed);
+    tickets_.store(0, std::memory_order_relaxed);
+    started_at_ = std::chrono::steady_clock::now();
     running_.store(true, std::memory_order_release);
     controller_ = std::thread([this, limits] {
         result_ = run_controller(limits);
@@ -204,9 +339,6 @@ SearchResult Search::stop() {
 // workers, watches the termination conditions, and collects the result.
 SearchResult Search::run_controller(const SearchLimits& limits) {
     stop_workers_.store(false, std::memory_order_relaxed);
-    simulations_.store(0, std::memory_order_relaxed);
-    tickets_.store(0, std::memory_order_relaxed);
-    started_at_ = std::chrono::steady_clock::now();
 
     maybe_expand(tree_->root(), tree_->root_board());
     std::string reason;
@@ -228,7 +360,7 @@ SearchResult Search::run_controller(const SearchLimits& limits) {
                 reason = "interrupted";
                 break;
             }
-            if (elapsed_ms() >= limits.max_time_ms) {
+            if (limits.max_time_ms > 0 && elapsed_ms() >= limits.max_time_ms) {
                 reason = "time";
                 break;
             }

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>chessengine</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>chessengine</h1>
+    <nav id="tabs">
+      <button id="tab-board" class="tab active">Board</button>
+      <button id="tab-tree" class="tab">Tree</button>
+    </nav>
+    <nav>
+      <button id="new">New game</button>
+      <button id="flip">Flip</button>
+      <button id="edit">Edit</button>
+      <span id="step-group" title="single MCTS steps: select → expand → evaluate → backpropagate">
+        <button id="step">⏭ Step</button>
+        <input id="step-n" type="number" min="1" value="1" title="steps per click" />
+      </span>
+      <label id="infinite-label" title="analyse without limits; Stop plays no move">
+        <input type="checkbox" id="infinite" /> ∞ infinite
+      </label>
+      <button id="go">▶ Move!</button>
+      <button id="play-best" hidden title="play the engine's current best move">Move!</button>
+      <label id="autoreply-label"><input type="checkbox" id="autoreply" checked /> engine replies</label>
+      <label id="autoplay-label" title="engine plays both sides until game over; any Stop pauses">
+        <input type="checkbox" id="autoplay" /> autoplay
+      </label>
+    </nav>
+    <span id="turn"></span>
+  </header>
+
+  <main id="view-board">
+    <div id="palette" title="drag a piece onto the board"></div>
+    <div id="eval-bar" title="white winning probability">
+      <div id="eval-white"></div>
+      <span id="eval-label">0.00</span>
+    </div>
+    <svg id="board"></svg>
+    <aside>
+      <div id="game-panel">
+        <h2>Moves</h2>
+        <div id="history" title="click a move to take back to that point"></div>
+        <h2>Evaluation</h2>
+        <canvas id="sparkline" title="white win probability per move — click to take back"></canvas>
+        <h2>Principal variation</h2>
+        <div id="pv">—</div>
+      </div>
+      <div id="edit-panel">
+        <h2>Edit position</h2>
+        <div class="edit-row">
+          <label><input type="radio" name="turn" id="turn-w" checked /> white to move</label>
+          <label><input type="radio" name="turn" id="turn-b" /> black</label>
+        </div>
+        <div class="edit-row" id="castling" title="auto-derived from king/rook squares">
+          <span>castling</span>
+          <label><input type="checkbox" class="castle" id="castle-wk" /> K</label>
+          <label><input type="checkbox" class="castle" id="castle-wq" /> Q</label>
+          <label><input type="checkbox" class="castle" id="castle-bk" /> k</label>
+          <label><input type="checkbox" class="castle" id="castle-bq" /> q</label>
+        </div>
+        <input id="edit-fen" type="text" spellcheck="false" title="FEN — paste to load" />
+        <div class="edit-row">
+          <button id="edit-start">Start position</button>
+          <button id="edit-clear">Clear</button>
+        </div>
+        <div class="edit-row">
+          <button id="edit-apply">Apply</button>
+          <button id="edit-cancel">Cancel</button>
+        </div>
+        <p class="params-note">drag pieces off the board to remove them</p>
+      </div>
+    </aside>
+  </main>
+
+  <main id="view-tree" hidden>
+    <canvas id="tree"></canvas>
+    <div id="tree-tools">
+      <button id="tree-fit" title="focus the root / fit the whole tree">⌂</button>
+      <button id="tree-zoom-in" title="zoom in (or double-click the tree)">+</button>
+      <button id="tree-zoom-out" title="zoom out">−</button>
+      <button id="tree-collapse" title="collapse to the best line">⊟</button>
+      <label id="tree-hover-label" title="hover nodes and edges for details">
+        <input type="checkbox" id="tree-hover" /> 🛈
+      </label>
+    </div>
+    <details id="params">
+      <summary>parameters</summary>
+      <div id="params-body"></div>
+    </details>
+  </main>
+
+  <footer>
+    <span id="status-live">idle</span>
+    <span id="message"></span>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
