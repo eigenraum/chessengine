@@ -29,7 +29,7 @@ class EngineConfig:
 class SearchLimits:
     """Per-search parameters: take effect at the next search start."""
 
-    max_time_ms: int = 5000
+    max_time_ms: int = 5000  # <= 0 = no time limit (infinite analysis)
     max_simulations: int = -1  # -1 = no simulation limit
     # Converged = over the last `convergence_window` simulations the root
     # evaluation drifted less than the cp threshold AND the best move did not

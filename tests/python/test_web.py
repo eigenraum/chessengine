@@ -122,6 +122,10 @@ def test_websocket_streams_state_and_search(client):
             if event["type"] == "search_end":
                 assert event["played_move"]
                 assert event["stop_reason"] in {"time", "converged", "simulations"}
+                # regression: the event must be built before the move is
+                # pushed — afterwards the flipped turn empties the SAN pv
+                # (and inverts the eval)
+                assert event["pv_san"]
         assert {"state", "stats", "search_end"} <= seen
         # the state broadcast right after search_end must already say idle,
         # or the client leaves the board locked (regression)
@@ -243,6 +247,68 @@ def test_websocket_streams_tree(client):
         assert len(tree_events) >= 2
         assert len(tree_events[-1]["parent"]) > 10
         wait_for_idle(client)
+
+
+def test_tree_fens_from_snapshot_base_fen(client):
+    """§10.1 regression: the final tree of a search is rooted one ply behind
+    the game (its snapshot is broadcast before the engine's move is pushed).
+    Replaying its paths against the snapshot's own fen must yield positions;
+    against the moved-on game position it yielded all-null thumbnails."""
+    with client.websocket_connect("/ws/events") as ws:
+        assert ws.receive_json()["type"] == "state"
+        client.post("/api/search/start")
+        last_tree = None
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            event = ws.receive_json()
+            if event["type"] == "tree":
+                last_tree = event
+            if event["type"] == "search_end":
+                break
+        wait_for_idle(client)
+    assert last_tree is not None and len(last_tree["parent"]) > 10
+    # the engine has played: the displayed tree's base is not the game's fen
+    assert last_tree["fen"] != client.get("/api/state").json()["fen"]
+    paths = [[last_tree["move"][i]] for i in range(1, 4)]
+    fens = client.post("/api/tree/fens", json={"paths": paths, "fen": last_tree["fen"]}).json()
+    assert all(f is not None for f in fens["fens"])
+    assert all(fens["sans"])
+    assert client.post("/api/tree/fens", json={"paths": [[]], "fen": "junk"}).status_code == 400
+
+
+def test_analyse_ignores_limits_and_stop_plays_nothing(client):
+    """§10.3: with analyse the shared fixture's 300-simulation limit must not
+    stop the search, and stopping plays no move."""
+    state = client.post("/api/search/start", json={"analyse": True}).json()
+    assert state["searching"] and state["analysing"]
+    time.sleep(0.4)  # far beyond 300 simulations
+    assert client.get("/api/state").json()["searching"]
+    state = client.post("/api/search/stop").json()
+    assert not state["searching"]
+    assert state["history"] == []
+
+
+def test_play_best(client):
+    assert client.post("/api/play/best").status_code == 409  # nothing analysed yet
+    client.post("/api/search/start", json={"analyse": True})
+    time.sleep(0.3)
+    state = client.post("/api/play/best").json()  # stops the analysis, then plays
+    assert not state["searching"]
+    assert len(state["history"]) == 1
+
+
+def test_step_accumulates_exact_descents(client):
+    def root_visits():
+        tree = client.get("/api/tree").json()
+        return tree["visits"][0]
+
+    assert root_visits() == 0
+    for expected, steps in [(1, 1), (2, 1), (7, 5)]:
+        client.post("/api/search/step", json={"steps": steps})
+        wait_for_idle(client)
+        assert root_visits() == expected
+    assert client.get("/api/state").json()["history"] == []  # steps never play
+    assert client.post("/api/search/step", json={"steps": 0}).status_code == 400
 
 
 def test_index_served(client):

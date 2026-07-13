@@ -28,6 +28,7 @@ header {
   background: var(--panel);
 }
 header h1 { font-size: 1.1rem; margin: 0; }
+header nav { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 header #turn { color: var(--muted); margin-left: auto; }
 
 #tabs { display: flex; gap: 0; border: 1px solid #4a4641; border-radius: 4px; overflow: hidden; }
@@ -46,13 +47,25 @@ button {
 button:hover { background: #4a4641; }
 button:disabled { opacity: 0.4; cursor: default; }
 #go { background: var(--accent); border-color: var(--accent); color: #fff; }
-#autoreply-label {
+#play-best { background: var(--accent); border-color: var(--accent); color: #fff; }
+#autoreply-label,
+#infinite-label {
   color: var(--muted);
   font-size: 0.85rem;
   display: flex;
   align-items: center;
   gap: 0.3rem;
   cursor: pointer;
+}
+#step-group { display: flex; gap: 0.2rem; align-items: center; }
+#step-n {
+  width: 3.4rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid #4a4641;
+  border-radius: 4px;
+  padding: 0.32rem 0.3rem;
+  font: inherit;
 }
 
 main {
@@ -94,6 +107,59 @@ main[hidden] { display: none; }
   font-size: 1.1rem;
   line-height: 1;
 }
+#tree-tools button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+#tree-hover-label {
+  width: 2.1rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+/* hover tooltip (§10.2) */
+#tree-tip {
+  position: absolute;
+  z-index: 5;
+  max-width: 280px;
+  background: var(--panel);
+  border: 1px solid #4a4641;
+  border-radius: 4px;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+#tree-tip .tip-title { font-weight: 600; margin-bottom: 0.15rem; }
+#tree-tip .tip-line { color: var(--muted); word-break: break-all; }
+#tree-tip canvas { display: block; margin-top: 0.4rem; border-radius: 3px; }
+
+/* navigation chips (§10.2) */
+#tree-nav {
+  position: absolute;
+  bottom: 0.6rem;
+  left: 0.6rem;
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+  background: rgba(48, 46, 43, 0.92);
+  border: 1px solid #4a4641;
+  border-radius: 4px;
+  padding: 0.3rem;
+  font-size: 0.85rem;
+}
+#tree-nav .nav-cur {
+  color: var(--muted);
+  padding: 0 0.35rem;
+  max-width: 6rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#tree-nav button { padding: 0.15rem 0.5rem; }
+/* display:flex would defeat the hidden attribute otherwise */
+#tree-nav[hidden],
+#tree-tip[hidden] { display: none; }
 
 /* parameter panel (drawer over the tree view) */
 #params {

@@ -360,7 +360,7 @@ SearchResult Search::run_controller(const SearchLimits& limits) {
                 reason = "interrupted";
                 break;
             }
-            if (elapsed_ms() >= limits.max_time_ms) {
+            if (limits.max_time_ms > 0 && elapsed_ms() >= limits.max_time_ms) {
                 reason = "time";
                 break;
             }

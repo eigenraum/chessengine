@@ -55,6 +55,7 @@ class Session:
         # Explicit flag, not _search_task.done(): the task itself broadcasts
         # the post-search state and must already read searching == False then.
         self._searching = False
+        self._analysing = False  # infinite analysis (§10.3): never auto-plays
 
     # ---- state -----------------------------------------------------------
 
@@ -81,6 +82,7 @@ class Session:
             "last_move": last.uci() if last else None,
             "check_square": chess.square_name(check) if check is not None else None,
             "searching": self.searching,
+            "analysing": self._analysing,
         }
 
     def _stats_event(self, stats: SearchStats, sims_per_s: float, nodes_per_s: float) -> dict:
@@ -109,6 +111,10 @@ class Session:
         return {
             "type": "tree",
             "turn": "w" if self.game.turn == chess.WHITE else "b",
+            # the position this snapshot is rooted at — the client sends it
+            # back with /api/tree/fens so paths replay against the right base
+            # even when the game has moved on (§10.1)
+            "fen": self.game.fen(),
             "root_path": root_path or [],
             "parent": view.parent,
             "move": view.move,
@@ -129,15 +135,21 @@ class Session:
             "searching": self.searching,
         }
 
-    def tree_fens(self, paths: list[list[str]]) -> dict:
+    def tree_fens(self, paths: list[list[str]], fen: str | None = None) -> dict:
         """FENs (plus the last move as SAN) for tree nodes (L3 thumbnails,
-        §5.2): replay each move path from the current position. None for
-        paths that don't replay (the tree is racy while searching; the client
-        just skips those thumbnails)."""
+        §5.2): replay each move path from `fen` — the base position of the
+        client's tree snapshot (§10.1; defaults to the current game). None
+        for paths that don't replay (the tree is racy while searching; the
+        client just skips those thumbnails)."""
+        base = fen or self.game.fen()
+        try:
+            chess.Board(base)
+        except ValueError as exc:
+            raise HTTPException(400, f"invalid FEN: {exc}") from None
         fens: list[str | None] = []
         sans: list[str | None] = []
         for path in paths:
-            board = chess.Board(self.game.fen())
+            board = chess.Board(base)
             try:
                 san = None
                 for uci in path:
@@ -260,26 +272,76 @@ class Session:
             await self.broadcast(self.tree_event())
         await self.broadcast(self.config_event())
 
-    async def start_search(self) -> None:
+    async def start_search(self, analyse: bool = False) -> None:
         """The Move! button. While a search runs it acts as Stop (accepted
-        decision: interrupt and play the best-so-far move)."""
+        decision: interrupt and play the best-so-far move). With analyse
+        (§10.3) the search has no time limit or convergence stop and never
+        plays a move — the tree just keeps growing until stopped."""
         if self.searching:
             await self.stop_search()
             return
         if self.game.is_over():
             raise HTTPException(409, "game is over")
-        self._play_on_stop = True
-        self.engine.start(self.limits)
+        limits = self.limits
+        if analyse:
+            limits = dataclasses.replace(
+                limits, max_time_ms=0, max_simulations=-1, convergence_window=0
+            )
+        self._play_on_stop = not analyse
+        self._analysing = analyse
+        self.engine.start(limits)
         self._searching = True
         self._search_task = asyncio.create_task(self._run_search())
         await self.broadcast_state()
 
-    async def stop_search(self, play_move: bool = True) -> None:
-        """Interrupt the search; by default the best-so-far move is played."""
+    async def step_search(self, steps: int) -> None:
+        """§10.4: exactly `steps` MCTS descents (select → expand → evaluate →
+        backprop), accumulated on the existing tree; no move is played."""
+        if self.searching:
+            raise HTTPException(409, "search in progress")
+        if self.game.is_over():
+            raise HTTPException(409, "game is over")
+        if steps < 1:
+            raise HTTPException(400, "steps must be >= 1")
+        self._play_on_stop = False
+        self._analysing = False
+        self.engine.start(
+            dataclasses.replace(
+                self.limits, max_time_ms=0, max_simulations=steps, convergence_window=0
+            )
+        )
+        self._searching = True
+        self._search_task = asyncio.create_task(self._run_search())
+        await self.broadcast_state()
+
+    async def play_best(self) -> None:
+        """§10.3: play the engine's current best move — the most-visited root
+        child of the live tree, which tracks the game position by
+        construction. Stops a running (analysis) search first, quietly."""
+        await self.stop_search(play_move=False)
+        if self.game.is_over():
+            raise HTTPException(409, "game is over")
+        view = self.engine.tree_view(max_nodes=64)  # best-first: the top child is in
+        best, best_visits = None, 0
+        for parent, move, visits in zip(view.parent, view.move, view.visits):
+            if parent == 0 and visits > best_visits:
+                best, best_visits = move, visits
+        if best is None:
+            raise HTTPException(409, "no analysis for this position yet")
+        applied = self.game.push(best)
+        self.engine.advance(applied.uci())
+        await self.broadcast_state()
+        await self.broadcast(self.tree_event())
+
+    async def stop_search(self, play_move: bool | None = None) -> None:
+        """Interrupt the search. play_move=None keeps the behavior the search
+        was started with (play the best-so-far move for Move! searches,
+        nothing for analysis/step searches)."""
         task = self._search_task
         if task is None or task.done():
             return
-        self._play_on_stop = play_move
+        if play_move is not None:
+            self._play_on_stop = play_move
         self.engine.request_stop()
         await task
 
@@ -310,6 +372,12 @@ class Session:
         result = self.engine.stop()
         # final tree view of the decided position, before advance() re-roots it
         await self.broadcast(self.tree_event())
+        # build the final stats event BEFORE the move is pushed: pv/eval are
+        # rooted in the searched position, and pushing flips game.turn (which
+        # would invert white_win_prob and make the pv unparseable as SAN)
+        rate = result.simulations / max(result.elapsed_ms / 1000, 1e-3)
+        node_rate = result.nodes / max(result.elapsed_ms / 1000, 1e-3)
+        end_event = self._stats_event(result, rate, node_rate)
         played = None
         try:
             if self._play_on_stop and result.best_move and not self.game.is_over():
@@ -318,11 +386,10 @@ class Session:
                 played = move.uci()
         finally:
             self._searching = False  # before broadcasting: state must say idle
-        rate = result.simulations / max(result.elapsed_ms / 1000, 1e-3)
-        node_rate = result.nodes / max(result.elapsed_ms / 1000, 1e-3)
+            self._analysing = False
         await self.broadcast(
             {
-                **self._stats_event(result, rate, node_rate),
+                **end_event,
                 "type": "search_end",
                 "stop_reason": result.stop_reason,
                 "played_move": played,
@@ -360,6 +427,15 @@ class TreeDetailRequest(BaseModel):
 
 class TreeFensRequest(BaseModel):
     paths: list[list[str]]
+    fen: str | None = None  # base position of the client's tree (§10.1)
+
+
+class SearchStartRequest(BaseModel):
+    analyse: bool = False  # infinite analysis (§10.3)
+
+
+class StepRequest(BaseModel):
+    steps: int = 1  # MCTS descents per click (§10.4)
 
 
 def create_app(session: Session | None = None) -> FastAPI:
@@ -418,11 +494,21 @@ def create_app(session: Session | None = None) -> FastAPI:
 
     @app.post("/api/tree/fens")
     async def post_tree_fens(req: TreeFensRequest) -> dict:
-        return session.tree_fens(req.paths)
+        return session.tree_fens(req.paths, req.fen)
 
     @app.post("/api/search/start")
-    async def post_search_start() -> dict:
-        await session.start_search()
+    async def post_search_start(req: SearchStartRequest | None = None) -> dict:
+        await session.start_search(analyse=bool(req and req.analyse))
+        return session.state()
+
+    @app.post("/api/search/step")
+    async def post_search_step(req: StepRequest | None = None) -> dict:
+        await session.step_search(req.steps if req else 1)
+        return session.state()
+
+    @app.post("/api/play/best")
+    async def post_play_best() -> dict:
+        await session.play_best()
         return session.state()
 
     @app.post("/api/search/stop")

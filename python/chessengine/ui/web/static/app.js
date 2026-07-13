@@ -30,17 +30,26 @@ const treeView = new TreeView($("tree"), {
   // click-to-explore (§4.2): the clicked node's moves become real game moves
   onNodeClick: (path) => {
     if (!confirm(`Play ${path.join(" ")} into the game?`)) return;
+    treeView.clearStep();
     api("/api/goto", { path });
   },
-  fetchFens: (paths) => api("/api/tree/fens", { paths }),
+  // fen: the base position of the client's tree snapshot (§10.1)
+  fetchFens: (paths, fen) => api("/api/tree/fens", { paths, fen }),
   fetchDetail: (path) => api("/api/tree/detail", { root_path: path, max_nodes: 2000 }),
+  onCollapseChange: (on) => {
+    $("tree-collapse").textContent = on ? "⊞" : "⊟";
+    $("tree-collapse").classList.toggle("active", on);
+  },
 });
 
 const board = new Board($("board"), {
   onMove: async (uci) => {
+    treeView.clearStep();
     const s = await api("/api/move", { uci });
-    // the common human-vs-engine flow: answer automatically (toggleable)
-    if (s && !s.outcome && $("autoreply").checked) api("/api/search/start");
+    // the common human-vs-engine flow: answer automatically (toggleable);
+    // in infinite mode (§10.3) the reply is a fresh analysis, not a move
+    if (s && !s.outcome && $("autoreply").checked)
+      api("/api/search/start", { analyse: $("infinite").checked });
   },
 });
 
@@ -72,9 +81,15 @@ function connect() {
 function handle(event) {
   if (event.type === "state") renderState(event);
   else if (event.type === "stats") renderStats(event);
-  else if (event.type === "tree") treeView.setTree(event);
-  else if (event.type === "config") paramsPanel.render(event);
-  else if (event.type === "search_end") {
+  else if (event.type === "tree") {
+    treeView.setTree(event);
+    // stepping (§10.4) grows the tree across many tiny searches — the
+    // cumulative count lives in the tree, not in the per-search stats
+    if (state && !state.searching) renderIdleFooter();
+  } else if (event.type === "config") {
+    paramsPanel.render(event);
+    treeView.cPuct = event.limits?.c_puct ?? 1.5; // hover PUCT breakdown
+  } else if (event.type === "search_end") {
     renderStats(event);
     setMessage(
       event.played_move
@@ -93,8 +108,13 @@ function renderState(s) {
     board.setState(s, humanTurn);
   }
 
-  $("go").textContent = s.searching ? "■ Stop" : "▶ Move!";
+  const infinite = $("infinite").checked;
+  $("go").textContent = s.searching ? "■ Stop" : infinite ? "▶ Analyse" : "▶ Move!";
   $("go").disabled = Boolean(s.outcome);
+  // infinite mode (§10.3): Stop never plays; this button does
+  $("play-best").hidden = !infinite;
+  $("play-best").disabled = Boolean(s.outcome);
+  $("step").disabled = s.searching || Boolean(s.outcome);
   $("turn").textContent = s.outcome
     ? `${s.outcome.result} — ${s.outcome.termination}`
     : `${s.turn === "w" ? "white" : "black"} to move${s.searching ? " (thinking…)" : ""}`;
@@ -112,18 +132,37 @@ function renderState(s) {
     span.className = "move";
     span.textContent = san;
     // takeback (§3.3): rewind the game to just after this move
-    span.addEventListener("click", () => api("/api/goto", { ply: i + 1 }));
+    span.addEventListener("click", () => {
+      treeView.clearStep();
+      api("/api/goto", { ply: i + 1 });
+    });
     list.appendChild(span);
   });
   list.scrollTop = list.scrollHeight;
 
-  if (!s.searching) $("status-live").textContent = "idle";
+  // keep the last search's metrics readable when idle (§10.1)
+  if (!s.searching) renderIdleFooter();
+}
+
+function renderIdleFooter() {
+  const tree = treeView.raw;
+  const cumulative = tree && tree.visits[0] > 0 ? ` · tree ${fmt(tree.visits[0])} sims` : "";
+  $("status-live").textContent =
+    (lastStats ? `idle · ${statsLine(lastStats)}` : "idle") + cumulative;
 }
 
 function fmt(n) {
   if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
   if (n >= 1e4) return (n / 1e3).toFixed(1) + "k";
   return String(n);
+}
+
+function statsLine(st) {
+  return (
+    `sims ${fmt(st.simulations)} · nodes ${fmt(st.nodes)} · ` +
+    `${fmt(st.sims_per_s)} sims/s · ${fmt(st.nodes_per_s)} nodes/s · ` +
+    `${(st.elapsed_ms / 1000).toFixed(1)}s · best ${st.best_move || "—"}`
+  );
 }
 
 function renderStats(st) {
@@ -133,11 +172,8 @@ function renderStats(st) {
   const cp = st.white_cp;
   $("eval-label").textContent = (cp >= 0 ? "+" : "") + (cp / 100).toFixed(2);
   $("pv").textContent = st.pv_san.length ? st.pv_san.join(" ") : "—";
-  treeView.setPV(st.pv);
-  $("status-live").textContent =
-    `sims ${fmt(st.simulations)} · nodes ${fmt(st.nodes)} · ` +
-    `${fmt(st.sims_per_s)} sims/s · ${fmt(st.nodes_per_s)} nodes/s · ` +
-    `${(st.elapsed_ms / 1000).toFixed(1)}s · best ${st.best_move || "—"}`;
+  treeView.setPV(st.pv, st.pv_san);
+  $("status-live").textContent = statsLine(st);
 }
 
 function setMessage(text) {
@@ -146,10 +182,27 @@ function setMessage(text) {
 
 // ---- controls ----------------------------------------------------------------
 
-$("go").addEventListener("click", () =>
-  api(state?.searching ? "/api/search/stop" : "/api/search/start"),
-);
-$("new").addEventListener("click", () => api("/api/new"));
+$("go").addEventListener("click", () => {
+  treeView.clearStep();
+  if (state?.searching) api("/api/search/stop");
+  else api("/api/search/start", { analyse: $("infinite").checked });
+});
+$("play-best").addEventListener("click", () => {
+  treeView.clearStep();
+  api("/api/play/best");
+});
+$("infinite").addEventListener("change", () => {
+  if (state) renderState(state); // relabel the go button, show/hide Move!
+});
+$("step").addEventListener("click", () => {
+  // §10.4: highlight what the step(s) changed — capture the baseline first
+  treeView.markStep();
+  api("/api/search/step", { steps: Math.max(1, Number($("step-n").value) || 1) });
+});
+$("new").addEventListener("click", () => {
+  treeView.clearStep();
+  api("/api/new");
+});
 $("flip").addEventListener("click", () => board.flip());
 $("edit").addEventListener("click", () => {
   if (editMode.active) return editMode.exit();
@@ -182,6 +235,10 @@ $("tab-tree").addEventListener("click", () => showTab("tree"));
 $("tree-fit").addEventListener("click", () => treeView.focusRoot());
 $("tree-zoom-in").addEventListener("click", () => treeView.zoomBy(1.6));
 $("tree-zoom-out").addEventListener("click", () => treeView.zoomBy(1 / 1.6));
+$("tree-collapse").addEventListener("click", () => treeView.setCollapsed(!treeView.collapsed));
+$("tree-hover").addEventListener("change", (e) => treeView.setHoverEnabled(e.target.checked));
+
+window.treeView = treeView; // debug / end-to-end test hook
 
 // render immediately from REST; the socket takes over for live updates
 fetch("/api/state").then((r) => r.json()).then(renderState);

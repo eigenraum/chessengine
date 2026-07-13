@@ -23,7 +23,7 @@ struct SearchConfig {
 };
 
 struct SearchLimits {
-    int max_time_ms = 5000;
+    int max_time_ms = 5000;         // <= 0 = no time limit (infinite analysis)
     int64_t max_simulations = -1;   // -1 = no simulation limit
     // Converged = over the last `convergence_window` simulations the root
     // centipawn evaluation drifted less than the threshold AND the best move
