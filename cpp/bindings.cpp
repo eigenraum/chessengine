@@ -19,6 +19,16 @@ public:
     explicit Engine(const mcts::SearchConfig& config) : search_(config, evaluator_) {}
 
     void set_position(const std::string& fen) { search_.set_position(Board(fen)); }
+    void advance(const std::string& uci) { search_.advance(Move::from_uci(uci)); }
+    mcts::TreeSnapshot snapshot(uint32_t min_visits, int max_depth) const {
+        return search_.snapshot(min_visits, max_depth);
+    }
+    mcts::TreeView tree_view(uint32_t max_nodes, uint32_t min_visits,
+                             const std::vector<std::string>& root_path) const {
+        std::vector<Move> path;
+        for (const std::string& uci : root_path) path.push_back(Move::from_uci(uci));
+        return search_.tree_view(max_nodes, min_visits, path);
+    }
     mcts::SearchResult search(const mcts::SearchLimits& limits) { return search_.run(limits); }
     void start(const mcts::SearchLimits& limits) { search_.start(limits); }
     mcts::SearchResult stop() { return search_.stop(); }
@@ -68,8 +78,6 @@ PYBIND11_MODULE(_mcts, m) {
         .def(py::init<>())
         .def_readwrite("workers", &mcts::SearchConfig::workers)
         .def_readwrite("batch_size", &mcts::SearchConfig::batch_size)
-        .def_readwrite("c_puct", &mcts::SearchConfig::c_puct)
-        .def_readwrite("virtual_loss", &mcts::SearchConfig::virtual_loss)
         .def_readwrite("max_nodes", &mcts::SearchConfig::max_nodes)
         .def_readwrite("seed", &mcts::SearchConfig::seed);
 
@@ -79,7 +87,9 @@ PYBIND11_MODULE(_mcts, m) {
         .def_readwrite("max_simulations", &mcts::SearchLimits::max_simulations)
         .def_readwrite("convergence_window", &mcts::SearchLimits::convergence_window)
         .def_readwrite("convergence_cp_threshold",
-                       &mcts::SearchLimits::convergence_cp_threshold);
+                       &mcts::SearchLimits::convergence_cp_threshold)
+        .def_readwrite("c_puct", &mcts::SearchLimits::c_puct)
+        .def_readwrite("virtual_loss", &mcts::SearchLimits::virtual_loss);
 
     py::class_<mcts::SearchStats>(m, "SearchStats")
         .def_readonly("simulations", &mcts::SearchStats::simulations)
@@ -93,9 +103,28 @@ PYBIND11_MODULE(_mcts, m) {
     py::class_<mcts::SearchResult, mcts::SearchStats>(m, "SearchResult")
         .def_readonly("stop_reason", &mcts::SearchResult::stop_reason);
 
+    py::class_<mcts::TreeView>(m, "TreeView")
+        .def_readonly("parent", &mcts::TreeView::parent)
+        .def_readonly("move", &mcts::TreeView::move)
+        .def_readonly("visits", &mcts::TreeView::visits)
+        .def_readonly("q", &mcts::TreeView::q)
+        .def_readonly("prior", &mcts::TreeView::prior)
+        .def_readonly("children_total", &mcts::TreeView::children_total);
+
+    py::class_<mcts::TreeSnapshot>(m, "TreeSnapshot")
+        .def_readonly("fens", &mcts::TreeSnapshot::fens)
+        .def_readonly("visit_counts", &mcts::TreeSnapshot::visit_counts)
+        .def_readonly("values", &mcts::TreeSnapshot::values)
+        .def_readonly("moves", &mcts::TreeSnapshot::moves)
+        .def_readonly("child_visits", &mcts::TreeSnapshot::child_visits);
+
     py::class_<Engine>(m, "Engine")
         .def(py::init<const mcts::SearchConfig&>())
         .def("set_position", &Engine::set_position)
+        .def("advance", &Engine::advance)
+        .def("snapshot", &Engine::snapshot, py::arg("min_visits"), py::arg("max_depth"))
+        .def("tree_view", &Engine::tree_view, py::arg("max_nodes"), py::arg("min_visits"),
+             py::arg("root_path"), py::call_guard<py::gil_scoped_release>())
         .def("search", &Engine::search, py::call_guard<py::gil_scoped_release>())
         .def("start", &Engine::start)
         .def("stop", &Engine::stop, py::call_guard<py::gil_scoped_release>())

@@ -9,9 +9,14 @@ network later. Design and rationale live in [DESIGN.md](DESIGN.md).
 ## Quick start
 
 ```sh
-uv sync              # builds the C++ extension and installs everything
-uv run chessengine   # play against the engine in the terminal
-uv run pytest        # run the test suite
+uv sync                  # builds the C++ extension and installs everything
+uv run chessengine-web   # play against the engine in the browser
+uv run chessengine       # ... or in the terminal
+uv run pytest            # run the test suite
+```
+
+```
+uv run chessengine-web [--port PORT] [--time-ms MS] [--workers N] [--no-browser]
 ```
 
 ```
@@ -50,7 +55,7 @@ tree updates are ThreadSanitizer-clean (see below).
 - [x] M2 — C++ board + move generator, perft gate vs python-chess
 - [x] M3 — sequential MCTS, batched material evaluation, engine plays
 - [x] M4 — tree parallelism (virtual loss), async search, live CLI stats
-- [ ] M5 — tree reuse across moves, training-data export
+- [x] M5 — tree reuse across moves, training-data export
 - [ ] M6 — PyTorch policy/value evaluator, self-play training
 
 ## Development
@@ -59,6 +64,7 @@ tree updates are ThreadSanitizer-clean (see below).
   (`core/` rules, `mcts/` search, `eval/` evaluators), tests in `tests/`.
 - After changing C++ sources: `uv sync --reinstall-package chessengine`.
 - Deep perft tests: `uv run pytest -m slow`.
+- Frontend pure-function tests: `node --test 'tests/js/*.test.mjs'`.
 - ThreadSanitizer stress run:
 
   ```sh

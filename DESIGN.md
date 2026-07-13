@@ -115,11 +115,13 @@ class SearchResult(SearchStats):
     stop_reason: str          # "time" | "converged" | "interrupted" | "simulations"
 
 @dataclass
-class TreeSnapshot:           # numpy arrays, one row per (node, child) edge
-    fens: list[str]           # position per node (root subtree, depth-limited)
-    visit_counts: np.ndarray
-    values: np.ndarray
-    moves: list[list[str]]
+class TreeSnapshot:           # one row per exported node (>= min_visits,
+    fens: list[str]           # <= max_depth plies below the root)
+    visit_counts: np.ndarray  # uint64 per node
+    values: np.ndarray        # float32: win prob for the side to move in fens[i]
+    moves: list[list[str]]    # explored child moves per node (UCI)
+    child_visits: list[list[int]]  # visit distribution over those moves
+                                   # (the policy target)
 ```
 
 ### 2.3 CLI GUI (ui/cli.py)
@@ -323,7 +325,7 @@ Exposed as `chessengine._mcts`; `engine.py` wraps it. Rules of the boundary:
    queue, blocking `search()`; engine plays legal, sensible chess in the CLI.
 4. ✅ **M4 — parallelism:** worker pool, virtual loss, atomics, TSan clean;
    live stats in the CLI; convergence stop.
-5. **M5 — tree reuse + training export:** `advance()`, `tree_snapshot()`.
+5. ✅ **M5 — tree reuse + training export:** `advance()`, `tree_snapshot()`.
 6. **M6 — learned evaluation:** PyTorch batch evaluator, policy priors,
    self-play data generation.
 

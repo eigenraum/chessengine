@@ -12,6 +12,7 @@ pybind11_add_module(_mcts
     cpp/core/movegen.cpp
     cpp/eval/material.cpp
     cpp/mcts/search.cpp
+    cpp/mcts/tree.cpp
 )
 target_include_directories(_mcts PRIVATE cpp)
 
@@ -30,6 +31,7 @@ if(CHESSENGINE_TSAN)
         cpp/core/movegen.cpp
         cpp/eval/material.cpp
         cpp/mcts/search.cpp
+        cpp/mcts/tree.cpp
     )
     target_include_directories(search_stress PRIVATE cpp)
     target_compile_options(search_stress PRIVATE -fsanitize=thread -g -O1)

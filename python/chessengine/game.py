@@ -55,6 +55,18 @@ class Game:
         except ValueError:
             raise IllegalMoveError(f"illegal move: {move}") from None
 
+    def rewind(self, ply: int) -> None:
+        """Rewind to the position after `ply` half-moves (0 = starting position).
+
+        Only moves played through this Game can be taken back; raises
+        ValueError if ply is out of range.
+        """
+        if not 0 <= ply <= len(self._san_history):
+            raise ValueError(f"ply out of range: {ply}")
+        while len(self._board.move_stack) > ply:
+            self._board.pop()
+        del self._san_history[ply:]
+
     def outcome(self) -> chess.Outcome | None:
         """Game result, or None while the game is still running."""
         return self._board.outcome(claim_draw=True)
@@ -74,3 +86,7 @@ class Game:
 
     def last_move(self) -> chess.Move | None:
         return self._board.peek() if self._board.move_stack else None
+
+    def check_square(self) -> int | None:
+        """Square of the checked king (side to move), or None if not in check."""
+        return self._board.king(self._board.turn) if self._board.is_check() else None
