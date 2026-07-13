@@ -7,6 +7,13 @@ batched evaluation — a material heuristic today, a PyTorch policy/value
 network later. Design and rationale live in [DESIGN.md](docs/design/DESIGN.md)
 (all design documents are collected in `docs/design/`).
 
+![Live MCTS search tree explorer, showing move candidates with visit counts, win probabilities, and centipawn evaluations, alongside the search's live tunable parameters](docs/images/search-tree-explorer.png)
+
+*The engine's search tree, inspected live in the browser: every candidate
+move annotated with visit count, win%, and centipawn score, while search
+parameters (workers, batch size, convergence criteria, ...) can be tuned
+and re-applied on the fly.*
+
 ## Quick start
 
 ```sh
