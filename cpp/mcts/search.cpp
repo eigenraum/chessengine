@@ -223,7 +223,7 @@ uint32_t Search::select_child(const Node& parent) const {
         const double q =
             n > 0 ? child.value_sum.load(std::memory_order_relaxed) / n : 0.5;
         const double score =
-            q + config_.c_puct * child.prior * sqrt_parent_visits / (1.0 + n);
+            q + limits_.c_puct * child.prior * sqrt_parent_visits / (1.0 + n);
         if (score > best_score) {
             best_score = score;
             best_index = index;
@@ -242,7 +242,7 @@ void Search::descend(std::vector<std::vector<uint32_t>>& paths,
     core::Board board = tree.root_board();
     std::vector<uint32_t> path{tree.root()};
     std::vector<core::Board> boards{board};
-    tree[tree.root()].virtual_loss.fetch_add(config_.virtual_loss,
+    tree[tree.root()].virtual_loss.fetch_add(limits_.virtual_loss,
                                              std::memory_order_relaxed);
 
     // Values are from the perspective of the player who moved INTO the leaf
@@ -278,7 +278,7 @@ void Search::descend(std::vector<std::vector<uint32_t>>& paths,
 
         uint32_t child_index = select_child(node);
         Node& child = tree[child_index];
-        child.virtual_loss.fetch_add(config_.virtual_loss, std::memory_order_relaxed);
+        child.virtual_loss.fetch_add(limits_.virtual_loss, std::memory_order_relaxed);
         board.apply(child.move);
         path.push_back(child_index);
         boards.push_back(board);
@@ -294,7 +294,7 @@ void Search::backprop(const std::vector<uint32_t>& path, float leaf_value) {
         Node& node = (*tree_)[*it];
         node.visits.fetch_add(1, std::memory_order_relaxed);
         node.value_sum.fetch_add(double(value), std::memory_order_relaxed);
-        node.virtual_loss.fetch_sub(config_.virtual_loss, std::memory_order_relaxed);
+        node.virtual_loss.fetch_sub(limits_.virtual_loss, std::memory_order_relaxed);
         value = 1.0f - value;  // one ply up, the other player's perspective
     }
 }
@@ -315,6 +315,7 @@ void Search::start(const SearchLimits& limits) {
     if (running()) throw std::logic_error("search already running");
     if (controller_.joinable()) controller_.join();  // reap a finished search
 
+    limits_ = limits;
     stop_requested_.store(false, std::memory_order_relaxed);
     // Reset the counters here, not on the controller thread: stats() may be
     // polled right after start() and must not see the previous search's tally.

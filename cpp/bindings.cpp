@@ -78,8 +78,6 @@ PYBIND11_MODULE(_mcts, m) {
         .def(py::init<>())
         .def_readwrite("workers", &mcts::SearchConfig::workers)
         .def_readwrite("batch_size", &mcts::SearchConfig::batch_size)
-        .def_readwrite("c_puct", &mcts::SearchConfig::c_puct)
-        .def_readwrite("virtual_loss", &mcts::SearchConfig::virtual_loss)
         .def_readwrite("max_nodes", &mcts::SearchConfig::max_nodes)
         .def_readwrite("seed", &mcts::SearchConfig::seed);
 
@@ -89,7 +87,9 @@ PYBIND11_MODULE(_mcts, m) {
         .def_readwrite("max_simulations", &mcts::SearchLimits::max_simulations)
         .def_readwrite("convergence_window", &mcts::SearchLimits::convergence_window)
         .def_readwrite("convergence_cp_threshold",
-                       &mcts::SearchLimits::convergence_cp_threshold);
+                       &mcts::SearchLimits::convergence_cp_threshold)
+        .def_readwrite("c_puct", &mcts::SearchLimits::c_puct)
+        .def_readwrite("virtual_loss", &mcts::SearchLimits::virtual_loss);
 
     py::class_<mcts::SearchStats>(m, "SearchStats")
         .def_readonly("simulations", &mcts::SearchStats::simulations)

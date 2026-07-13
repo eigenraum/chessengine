@@ -17,16 +17,18 @@ from chessengine import _mcts
 
 @dataclass
 class EngineConfig:
+    """Structural knobs: changing one means rebuilding the Engine."""
+
     workers: int = 1  # 1 = fully sequential reference mode
     batch_size: int = 8  # max leaf evaluations per batch
-    c_puct: float = 1.5  # PUCT exploration constant
-    virtual_loss: int = 1
     max_nodes: int = 1 << 22  # search-tree arena capacity (~128 MB)
     seed: int = 0
 
 
 @dataclass
 class SearchLimits:
+    """Per-search parameters: take effect at the next search start."""
+
     max_time_ms: int = 5000
     max_simulations: int = -1  # -1 = no simulation limit
     # Converged = over the last `convergence_window` simulations the root
@@ -34,6 +36,8 @@ class SearchLimits:
     # change. window <= 0 disables early stopping.
     convergence_window: int = 2000
     convergence_cp_threshold: int = 5
+    c_puct: float = 1.5  # PUCT exploration constant
+    virtual_loss: int = 1
 
 
 @dataclass
@@ -110,8 +114,6 @@ class Engine:
         cxx_config = _mcts.SearchConfig()
         cxx_config.workers = config.workers
         cxx_config.batch_size = config.batch_size
-        cxx_config.c_puct = config.c_puct
-        cxx_config.virtual_loss = config.virtual_loss
         cxx_config.max_nodes = config.max_nodes
         cxx_config.seed = config.seed
         self._engine = _mcts.Engine(cxx_config)
@@ -191,4 +193,6 @@ class Engine:
         cxx_limits.max_simulations = limits.max_simulations
         cxx_limits.convergence_window = limits.convergence_window
         cxx_limits.convergence_cp_threshold = limits.convergence_cp_threshold
+        cxx_limits.c_puct = limits.c_puct
+        cxx_limits.virtual_loss = limits.virtual_loss
         return cxx_limits

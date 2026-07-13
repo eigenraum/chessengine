@@ -18,8 +18,6 @@ namespace mcts {
 struct SearchConfig {
     int workers = 1;      // 1 = fully sequential reference mode
     int batch_size = 8;   // max leaves per evaluation batch
-    float c_puct = 1.5f;  // PUCT exploration constant
-    int virtual_loss = 1;
     uint32_t max_nodes = 1u << 22;  // arena capacity (~128 MB of nodes)
     uint64_t seed = 0;              // reserved for root noise (M6)
 };
@@ -32,6 +30,10 @@ struct SearchLimits {
     // did not change. <= 0 disables early stopping.
     int convergence_window = 2000;
     int convergence_cp_threshold = 5;
+    // Per-search algorithm parameters (not structural, so they live here and
+    // can change between searches without rebuilding the engine).
+    float c_puct = 1.5f;  // PUCT exploration constant
+    int virtual_loss = 1;
 };
 
 struct SearchStats {
@@ -130,6 +132,10 @@ private:
     int64_t elapsed_ms() const;
 
     SearchConfig config_;
+    // The running search's limits. Written by start() before the controller
+    // (and thus the workers) exist, so the hot-path reads of c_puct and
+    // virtual_loss need no synchronization.
+    SearchLimits limits_;
     EvalQueue queue_;
     std::unique_ptr<Tree> tree_;
     std::atomic<bool> stop_requested_{false};  // external: user/GUI interrupt
