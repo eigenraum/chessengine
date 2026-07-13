@@ -4,7 +4,8 @@ An educational chess engine built around Monte Carlo Tree Search, in the
 spirit of AlphaZero: a parallel C++ search core behind pybind11, a Python
 layer for game rules (python-chess) and the terminal UI, and pluggable
 batched evaluation — a material heuristic today, a PyTorch policy/value
-network later. Design and rationale live in [DESIGN.md](DESIGN.md).
+network later. Design and rationale live in [DESIGN.md](docs/design/DESIGN.md)
+(all design documents are collected in `docs/design/`).
 
 ## Quick start
 
