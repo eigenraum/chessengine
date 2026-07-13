@@ -1,7 +1,8 @@
 # Design Document: Browser-Based Visualization
 
-Status: **draft for review**. Companion to `DESIGN.md`. Replaces the CLI as the
-primary frontend; the CLI stays as the minimal fallback and for scripted use.
+Status: **accepted (2026-07-13)**. Companion to `DESIGN.md`. Replaces the CLI
+as the primary frontend; the CLI is **frozen at M5 feature level** and stays as
+the minimal fallback / smoke-test frontend and for scripted use.
 
 Guiding rule (unchanged): educational project — readability and simplicity win
 over the last percent. The same applies to the frontend stack: as few moving
@@ -39,8 +40,10 @@ The draft asked for a recommendation ("html5, but I'm not an expert"). Proposal:
   two views and a settings panel — a bundler/framework buys little and costs a
   second toolchain. *Fallback:* if the tree renderer grows painful in plain JS,
   switch to Vite + TypeScript later; the no-build code ports 1:1.
-- **Board rendering: own SVG component** (~300 lines: 64 squares, unicode/SVG
-  pieces, pointer-event drag & drop). No external board library. Rationale:
+- **Board rendering: own SVG component** (~300 lines: 64 squares,
+  pointer-event drag & drop) with a **vendored public-domain SVG piece set**
+  (~15 small files; also used for the L3 tree thumbnails). No external board
+  library. Rationale:
   edit mode (spare-piece palette, drag-off-to-remove), PV arrows, and eval
   overlays all want custom control anyway; the popular off-the-shelf board
   (lichess's chessground) is GPL and brings a build step. The client contains
@@ -68,7 +71,8 @@ One page, two tabs (Board / Tree) sharing a bottom status bar.
 - While the engine thinks: eval bar beside the board (win prob + centipawns),
   sims/nodes/elapsed readout, PV shown as arrows on the board (first 2–3 PV
   plies) and as SAN text. A *Stop* button interrupts (`engine.stop()`; the
-  best-so-far move is played).
+  best-so-far move is played). Pressing *Move!* while a search is already
+  running does the same as *Stop*: interrupt and play the best-so-far move.
 - Move history (SAN, clickable → see takeback in §3.3), New game button.
 
 ### 3.2 Edit mode
@@ -256,15 +260,13 @@ Each milestone is shippable and demo-able on its own.
 | Frontend | keep logic in pure functions (layout, LOD choice, path hashing) — unit-testable with node's built-in test runner, no browser harness for now |
 | Manual | `verify` skill / checklist per milestone (drag, edit, explore) |
 
-## 9. Open Questions (input wanted)
+## 9. Resolved Decisions (2026-07-13)
 
-1. **Piece graphics:** unicode glyphs (zero assets, font-dependent rendering)
-   vs vendoring one public-domain SVG piece set (crisper, ~15 small files).
-   Recommendation: vendor SVG pieces (they're also needed for L3 thumbnails).
-2. **Tree layout direction:** left→right layered (reads like a game, depth =
-   x, good for wide trees) vs top-down. Recommendation: left→right.
-3. **Move! semantics on game end / while searching** — button disabled, or
-   Stop-then-move? Recommendation: Move! during a search acts as Stop (play
-   best-so-far).
-4. Keep the CLI at feature parity, or freeze it at M5 level and let the web
-   UI pull ahead? Recommendation: freeze (it remains the smoke-test frontend).
+1. **Piece graphics:** vendored public-domain SVG piece set (§2) — crisp,
+   font-independent, reused for L3 tree thumbnails.
+2. **Tree layout:** left→right layered (root left, depth = x) — reads like a
+   game and suits wide trees (§4.1).
+3. **Move! while searching:** acts as *Stop* — interrupt and play the
+   best-so-far move (§3.1).
+4. **CLI:** frozen at M5 feature level; remains the minimal fallback and
+   smoke-test frontend while the web UI pulls ahead.
