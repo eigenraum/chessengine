@@ -60,6 +60,7 @@ const treeView = new TreeView($("tree"), {
     $("tree-collapse").textContent = on ? "⊞" : "⊟";
     $("tree-collapse").classList.toggle("active", on);
   },
+  onCompressChange: (on) => $("tree-compress").classList.toggle("active", on),
 });
 
 const board = new Board($("board"), {
@@ -359,6 +360,8 @@ $("tree-fit").addEventListener("click", () => treeView.focusRoot());
 $("tree-zoom-in").addEventListener("click", () => treeView.zoomBy(1.6));
 $("tree-zoom-out").addEventListener("click", () => treeView.zoomBy(1 / 1.6));
 $("tree-collapse").addEventListener("click", () => treeView.setCollapsed(!treeView.collapsed));
+$("tree-compress").addEventListener("click", () => treeView.setCompressed(!treeView.compressed));
+$("tree-compress-k").addEventListener("change", (e) => treeView.setCompressK(e.target.valueAsNumber));
 $("tree-hover").addEventListener("change", (e) => treeView.setHoverEnabled(e.target.checked));
 
 window.treeView = treeView; // debug / end-to-end test hook
