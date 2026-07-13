@@ -13,10 +13,6 @@ import { fenPlacement } from "./board.js";
 
 const DX = 140; // world units per ply (depth → x)
 const ROW = 16; // world units per leaf row (y)
-// fit() floor: never auto-zoom rows below disc level (§4.1 L1, rowPx ≥ 3).
-// Crushing rows to cram a large tree into the canvas made nodes sub-pixel
-// and dropped them into L0, where _hitTest() has nothing to hover at all.
-const MIN_ROW_PX = 14;
 
 // Sibling order, top-down. Pluggable criterion (a UI dropdown later);
 // initially: visit count, most-visited child on top.
@@ -385,16 +381,12 @@ export class TreeView {
     const worldW = this.layout.maxX + DX;
     const worldH = Math.max(this.layout.rows * ROW, ROW);
     this.tf.kx = Math.min((width - 80) / worldW, 1.3);
-    // Never zoom rows below disc level (MIN_ROW_PX): a tree with thousands of
-    // rows can't fit the viewport *and* stay legible, so this deliberately
-    // shows only the subset of rows that fits at a readable size, centered on
-    // the tree — the rest is a pan away, not squeezed into invisibility.
-    this.tf.ky = Math.max(Math.min((height - 80) / worldH, 1.5), MIN_ROW_PX / ROW);
+    this.tf.ky = Math.min((height - 80) / worldH, 1.5);
     this.tf.x = 40;
     this.tf.y = height / 2 - (worldH / 2) * this.tf.ky;
   }
 
-  /** ⌂ button: recenter and reset to the readable auto-fit. */
+  /** Refit the whole tree, root at the left edge, and return to auto-fit. */
   focusRoot() {
     this.userMoved = false;
     if (!this.tree) return;
@@ -497,19 +489,18 @@ export class TreeView {
     }, 260);
   }
 
-  /** Node under (mx,my) in css px, or null. Discs at L1, card boxes at L2+;
-   * L0 rows are subpixel — nothing to click. */
+  /** Node under (mx,my) in css px, or null. Discs at L0/L1 (even sub-pixel
+   * rows keep a fixed hoverable radius), card boxes at L2+. */
   _hitTest(mx, my) {
     const { tree, layout, tf } = this;
     const rowPx = ROW * tf.ky;
     const lod = this._lod(rowPx);
-    if (lod === 0) return null;
     let best = null;
     let bestDist = Infinity;
     for (let i = 0; i < tree.parent.length; i++) {
       const x = layout.x[i] * tf.kx + tf.x;
       const y = layout.y[i] * tf.ky + tf.y;
-      if (lod === 1) {
+      if (lod <= 1) {
         const r = Math.max(this._discRadius(i, rowPx), 7);
         const d2 = (mx - x) ** 2 + (my - y) ** 2;
         if (d2 <= r * r && d2 < bestDist) {
