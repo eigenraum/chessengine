@@ -179,6 +179,9 @@ function showTab(tab) {
 }
 $("tab-board").addEventListener("click", () => showTab("board"));
 $("tab-tree").addEventListener("click", () => showTab("tree"));
+$("tree-fit").addEventListener("click", () => treeView.focusRoot());
+$("tree-zoom-in").addEventListener("click", () => treeView.zoomBy(1.6));
+$("tree-zoom-out").addEventListener("click", () => treeView.zoomBy(1 / 1.6));
 
 // render immediately from REST; the socket takes over for live updates
 fetch("/api/state").then((r) => r.json()).then(renderState);

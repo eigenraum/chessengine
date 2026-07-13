@@ -65,14 +65,35 @@ main {
 }
 main[hidden] { display: none; }
 
-#view-tree { padding: 0; align-items: stretch; position: relative; }
+#view-tree { padding: 0; position: relative; }
+/* Absolutely positioned on purpose: the canvas buffer is sized to
+   clientSize * devicePixelRatio from JS, and an in-flow canvas would feed
+   that intrinsic size back into layout — a growth loop on dpr > 1. */
 #tree {
-  flex: 1;
-  min-height: 0;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   touch-action: none;
   cursor: grab;
 }
 #tree:active { cursor: grabbing; }
+
+#tree-tools {
+  position: absolute;
+  top: 0.6rem;
+  left: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+#tree-tools button {
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  font-size: 1.1rem;
+  line-height: 1;
+}
 
 /* parameter panel (drawer over the tree view) */
 #params {

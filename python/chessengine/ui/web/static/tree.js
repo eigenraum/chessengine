@@ -203,8 +203,12 @@ export class TreeView {
    * view must be fitted against the now-real size. */
   refresh() {
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = this.canvas.clientWidth * dpr;
-    this.canvas.height = this.canvas.clientHeight * dpr;
+    // Cap the buffer (huge = slow or silently unpaintable) and only touch
+    // the attributes on change — assigning resets the canvas.
+    const w = Math.min(Math.round(this.canvas.clientWidth * dpr), 8192);
+    const h = Math.min(Math.round(this.canvas.clientHeight * dpr), 8192);
+    if (this.canvas.width !== w) this.canvas.width = w;
+    if (this.canvas.height !== h) this.canvas.height = h;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in css px below
     if (this.tree && !this.userMoved) this._fit();
     this.draw();
@@ -221,12 +225,21 @@ export class TreeView {
     this.tf.y = height / 2 - (worldH / 2) * this.tf.ky;
   }
 
-  _wheel(event) {
-    event.preventDefault();
-    const rect = this.canvas.getBoundingClientRect();
-    const mx = event.clientX - rect.left;
-    const my = event.clientY - rect.top;
-    const factor = Math.exp(-event.deltaY * 0.0015);
+  /** Refit the whole tree, root at the left edge, and return to auto-fit. */
+  focusRoot() {
+    this.userMoved = false;
+    if (!this.tree) return;
+    this._fit();
+    this.draw();
+  }
+
+  /** Zoom by `factor` around the canvas center (the +/- buttons). */
+  zoomBy(factor) {
+    const { width, height } = this.canvas.getBoundingClientRect();
+    this._zoomAt(width / 2, height / 2, factor);
+  }
+
+  _zoomAt(mx, my, factor) {
     // kx is capped: past card zoom, more zoom spreads rows, not plies
     const kx = Math.min(Math.max(this.tf.kx * factor, 0.002), 1.4);
     const ky = Math.min(Math.max(this.tf.ky * factor, 0.0005), 12);
@@ -236,6 +249,16 @@ export class TreeView {
     this.tf.ky = ky;
     this.userMoved = true;
     this.draw();
+  }
+
+  _wheel(event) {
+    event.preventDefault();
+    const rect = this.canvas.getBoundingClientRect();
+    this._zoomAt(
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+      Math.exp(-event.deltaY * 0.0015),
+    );
   }
 
   _dragStart(event) {
