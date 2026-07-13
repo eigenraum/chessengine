@@ -444,6 +444,17 @@ def create_app(session: Session | None = None) -> FastAPI:
             session._clients.discard(ws)
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+
+    # No-build frontend: without Cache-Control browsers cache the JS modules
+    # heuristically and can keep running stale code after an update. no-cache
+    # still allows conditional requests (304s via the StaticFiles ETag).
+    @app.middleware("http")
+    async def no_heuristic_caching(request, call_next):
+        response = await call_next(request)
+        if not request.url.path.startswith("/api"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     return app
 
 

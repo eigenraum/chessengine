@@ -43,6 +43,7 @@ export function layoutTree(tree, sortBy = "visits") {
   const x = new Float64Array(n);
   const y = new Float64Array(n);
   let rows = 0;
+  let maxDepth = 0;
   if (n > 0) {
     // post-order: children first, then center the parent on them
     const stack = [[0, 0]]; // [node, next-child cursor]
@@ -61,9 +62,10 @@ export function layoutTree(tree, sortBy = "visits") {
         stack.pop();
       }
       x[node] = depth[node] * DX;
+      if (depth[node] > maxDepth) maxDepth = depth[node];
     }
   }
-  return { x, y, depth, children, rows };
+  return { x, y, depth, children, rows, maxX: maxDepth * DX };
 }
 
 // ---- piece images for canvas thumbnails -----------------------------------
@@ -211,7 +213,7 @@ export class TreeView {
   _fit() {
     const { width, height } = this.canvas.getBoundingClientRect();
     if (width === 0 || this.layout.rows === 0) return;
-    const worldW = Math.max(...this.layout.x) + DX;
+    const worldW = this.layout.maxX + DX;
     const worldH = Math.max(this.layout.rows * ROW, ROW);
     this.tf.kx = Math.min((width - 80) / worldW, 1.3);
     this.tf.ky = Math.min((height - 80) / worldH, 1.5);
@@ -363,6 +365,16 @@ export class TreeView {
     return { w: Math.min(DX * this.tf.kx * 0.85, 128), h: Math.min(rowPx * 0.9, 66), board: 0 };
   }
 
+  /** true if the tree's screen bounding box misses the viewport entirely */
+  _offscreen(width, height) {
+    const { tf, layout } = this;
+    const left = tf.x;
+    const right = tf.x + (layout.maxX + DX) * tf.kx;
+    const top = tf.y;
+    const bottom = tf.y + Math.max(layout.rows - 1, 1) * ROW * tf.ky;
+    return right < 0 || left > width || bottom < 0 || top > height;
+  }
+
   /** rows on the current PV, found by following the moves from the root */
   _pvRows() {
     const rows = new Set([0]);
@@ -385,6 +397,15 @@ export class TreeView {
       ctx.font = "14px system-ui";
       ctx.fillText("no search tree yet — make the engine think", 24, 40);
       return;
+    }
+
+    // Never render nothing: if the whole tree is outside the viewport (the
+    // user zoomed off, or panned around a tiny early tree and a snapshot
+    // thousands of rows tall landed far away at the old transform), re-fit
+    // and go back to auto-fit mode.
+    if (width > 0 && this._offscreen(width, height)) {
+      this.userMoved = false;
+      this._fit();
     }
 
     const n = tree.parent.length;

@@ -249,3 +249,6 @@ def test_index_served(client):
     response = client.get("/")
     assert response.status_code == 200
     assert "<title>chessengine</title>" in response.text
+    # stale-module guard: static files must always be revalidated
+    assert response.headers["cache-control"] == "no-cache"
+    assert client.get("/tree.js").headers["cache-control"] == "no-cache"
