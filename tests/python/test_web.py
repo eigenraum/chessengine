@@ -311,6 +311,33 @@ def test_step_accumulates_exact_descents(client):
     assert client.post("/api/search/step", json={"steps": 0}).status_code == 400
 
 
+def test_eval_history_lifecycle(client):
+    """§11.2: one eval entry per searched ply; takeback truncates, new clears."""
+    assert client.get("/api/state").json()["eval_history"] == []
+
+    client.post("/api/search/start")
+    wait_for_idle(client)  # engine searched ply 0, then played
+    client.post("/api/search/start")
+    state = wait_for_idle(client)
+    history = state["eval_history"]
+    assert [e["ply"] for e in history] == [0, 1]
+    assert all(0.0 <= e["white_win_prob"] <= 1.0 for e in history)
+    assert all("white_cp" in e for e in history)
+
+    # re-searching a ply overwrites instead of duplicating
+    client.post("/api/search/step", json={"steps": 2})
+    state = wait_for_idle(client)
+    assert [e["ply"] for e in state["eval_history"]] == [0, 1, 2]
+    client.post("/api/search/step", json={"steps": 2})
+    state = wait_for_idle(client)
+    assert [e["ply"] for e in state["eval_history"]] == [0, 1, 2]
+
+    state = client.post("/api/goto", json={"ply": 1}).json()
+    assert [e["ply"] for e in state["eval_history"]] == [0, 1]
+    state = client.post("/api/new", json={}).json()
+    assert state["eval_history"] == []
+
+
 def test_index_served(client):
     response = client.get("/")
     assert response.status_code == 200

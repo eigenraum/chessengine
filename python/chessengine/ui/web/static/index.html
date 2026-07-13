@@ -28,6 +28,9 @@
       <button id="go">▶ Move!</button>
       <button id="play-best" hidden title="play the engine's current best move">Move!</button>
       <label id="autoreply-label"><input type="checkbox" id="autoreply" checked /> engine replies</label>
+      <label id="autoplay-label" title="engine plays both sides until game over; any Stop pauses">
+        <input type="checkbox" id="autoplay" /> autoplay
+      </label>
     </nav>
     <span id="turn"></span>
   </header>
@@ -43,6 +46,8 @@
       <div id="game-panel">
         <h2>Moves</h2>
         <div id="history" title="click a move to take back to that point"></div>
+        <h2>Evaluation</h2>
+        <canvas id="sparkline" title="white win probability per move — click to take back"></canvas>
         <h2>Principal variation</h2>
         <div id="pv">—</div>
       </div>

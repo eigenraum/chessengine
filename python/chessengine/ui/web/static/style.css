@@ -49,6 +49,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 #go { background: var(--accent); border-color: var(--accent); color: #fff; }
 #play-best { background: var(--accent); border-color: var(--accent); color: #fff; }
 #autoreply-label,
+#autoplay-label,
 #infinite-label {
   color: var(--muted);
   font-size: 0.85rem;
@@ -246,6 +247,9 @@ main[hidden] { display: none; }
 .mark-capture { fill: none; stroke: rgba(20, 85, 30, 0.45); stroke-width: 5; }
 .mark-check { fill: rgba(220, 40, 30, 0.55); }
 
+/* PV arrows (§11.1): opacity per arrow comes from the element attribute */
+.pv-arrow { fill: var(--accent); stroke: none; pointer-events: none; }
+
 .promo-backdrop { fill: rgba(0, 0, 0, 0.55); }
 .promo-cell { fill: #e8e6e3; stroke: #333; }
 .promo-choice { cursor: pointer; }
@@ -275,6 +279,14 @@ aside h2 { font-size: 0.8rem; text-transform: uppercase; color: var(--muted); ma
 #history .move { cursor: pointer; }
 #history .move:hover { color: var(--accent); text-decoration: underline; }
 #pv { color: var(--muted); word-break: break-all; min-height: 2.8em; }
+#sparkline {
+  width: 100%;
+  height: 52px;
+  background: var(--bg);
+  border-radius: 3px;
+  margin-bottom: 0.8rem;
+  cursor: pointer;
+}
 
 /* edit mode (§3.2): body.editing swaps eval bar/history for palette/editor */
 #palette { display: none; }

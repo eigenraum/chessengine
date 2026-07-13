@@ -34,6 +34,37 @@ export function fenPlacement(fen) {
   return map;
 }
 
+/** PV arrow outline (§11.1): 7 points from square center `from` to square
+ * center `to` — a shaft that stops short of a triangular head whose tip is
+ * the target center. Pure geometry, in viewBox units. */
+export function arrowPolygon(from, to, sq = SQ) {
+  const ax = from.x + sq / 2;
+  const ay = from.y + sq / 2;
+  const bx = to.x + sq / 2;
+  const by = to.y + sq / 2;
+  const len = Math.hypot(bx - ax, by - ay);
+  const ux = (bx - ax) / len;
+  const uy = (by - ay) / len;
+  const px = -uy; // perpendicular unit vector
+  const py = ux;
+  const shaft = sq * 0.09; // half shaft width
+  const headW = sq * 0.24; // half head width
+  const headL = sq * 0.32;
+  const sx = ax + ux * sq * 0.16; // leave the source piece visible
+  const sy = ay + uy * sq * 0.16;
+  const hx = bx - ux * headL; // head base
+  const hy = by - uy * headL;
+  return [
+    [sx + px * shaft, sy + py * shaft],
+    [hx + px * shaft, hy + py * shaft],
+    [hx + px * headW, hy + py * headW],
+    [bx, by],
+    [hx - px * headW, hy - py * headW],
+    [hx - px * shaft, hy - py * shaft],
+    [sx - px * shaft, sy - py * shaft],
+  ];
+}
+
 export class Board {
   /**
    * @param {SVGSVGElement} svg
@@ -51,11 +82,12 @@ export class Board {
     this.selected = null; // square name
     this.lastMove = null; // uci
     this.checkSquare = null;
+    this.arrows = []; // uci moves, PV head first (§11.1)
     this.drag = null;
 
     svg.setAttribute("viewBox", `0 0 ${8 * SQ} ${8 * SQ}`);
     this.layers = {};
-    for (const name of ["squares", "marks", "pieces", "overlay"]) {
+    for (const name of ["squares", "marks", "pieces", "arrows", "overlay"]) {
       this.layers[name] = el("g");
       svg.appendChild(this.layers[name]);
     }
@@ -80,6 +112,12 @@ export class Board {
   flip() {
     this.orientation = this.orientation === "w" ? "b" : "w";
     this.render();
+  }
+
+  /** PV arrows (§11.1): up to 3 moves, strongest (= next) move first. */
+  setArrows(ucis) {
+    this.arrows = ucis.slice(0, 3);
+    this._renderArrows();
   }
 
   // ---- edit mode (§3.2) ----------------------------------------------------
@@ -158,6 +196,24 @@ export class Board {
   render() {
     this._renderMarks();
     this._renderPieces();
+    this._renderArrows();
+  }
+
+  _renderArrows() {
+    const layer = this.layers.arrows;
+    layer.replaceChildren();
+    if (this.editable) return;
+    const opacity = [0.8, 0.5, 0.3];
+    this.arrows.forEach((uci, i) => {
+      const points = arrowPolygon(this._xy(uci.slice(0, 2)), this._xy(uci.slice(2, 4)));
+      layer.appendChild(
+        el("polygon", {
+          points: points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" "),
+          class: "pv-arrow",
+          opacity: opacity[i] ?? 0.3,
+        }),
+      );
+    });
   }
 
   _renderMarks() {

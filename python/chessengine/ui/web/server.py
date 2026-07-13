@@ -56,6 +56,8 @@ class Session:
         # the post-search state and must already read searching == False then.
         self._searching = False
         self._analysing = False  # infinite analysis (§10.3): never auto-plays
+        # one eval per searched position, keyed by ply (§11.2): the sparkline
+        self.eval_history: list[dict] = []
 
     # ---- state -----------------------------------------------------------
 
@@ -83,7 +85,21 @@ class Session:
             "check_square": chess.square_name(check) if check is not None else None,
             "searching": self.searching,
             "analysing": self._analysing,
+            "eval_history": self.eval_history,
         }
+
+    def _record_eval(self, stats_event: dict) -> None:
+        """§11.2: remember the eval of the just-searched position for the
+        sparkline. The event is built pre-push, so the ply is the current
+        history length; a re-search of the same ply overwrites its entry."""
+        entry = {
+            "ply": len(self.game.san_history()),
+            "white_win_prob": stats_event["white_win_prob"],
+            "white_cp": stats_event["white_cp"],
+        }
+        self.eval_history = [e for e in self.eval_history if e["ply"] != entry["ply"]]
+        self.eval_history.append(entry)
+        self.eval_history.sort(key=lambda e: e["ply"])
 
     def _stats_event(self, stats: SearchStats, sims_per_s: float, nodes_per_s: float) -> dict:
         # root_value/root_cp are from the side to move's view; the eval bar
@@ -209,6 +225,7 @@ class Session:
         except ValueError as exc:
             raise HTTPException(400, f"invalid FEN: {exc}") from None
         self.engine.set_position(self.game.fen())
+        self.eval_history = []
         await self.broadcast_state()
 
     async def set_position(self, fen: str) -> None:
@@ -223,6 +240,7 @@ class Session:
             raise HTTPException(400, f"invalid position: {', '.join(reasons)}")
         self.game = Game(board.fen())
         self.engine.set_position(self.game.fen())
+        self.eval_history = []
         await self.broadcast_state()
         await self.broadcast(self.tree_event())
 
@@ -234,6 +252,8 @@ class Session:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
         self.engine.set_position(self.game.fen())
+        # evals past the rewind point describe abandoned positions (§11.2)
+        self.eval_history = [e for e in self.eval_history if e["ply"] <= ply]
         await self.broadcast_state()
         await self.broadcast(self.tree_event())
 
@@ -378,6 +398,8 @@ class Session:
         rate = result.simulations / max(result.elapsed_ms / 1000, 1e-3)
         node_rate = result.nodes / max(result.elapsed_ms / 1000, 1e-3)
         end_event = self._stats_event(result, rate, node_rate)
+        if result.simulations > 0:
+            self._record_eval(end_event)
         played = None
         try:
             if self._play_on_stop and result.best_move and not self.game.is_over():

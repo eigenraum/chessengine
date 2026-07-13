@@ -5,11 +5,30 @@ import { Board } from "./board.js";
 import { TreeView } from "./tree.js";
 import { EditMode } from "./edit.js";
 import { ParamsPanel } from "./params.js";
+import { sparklinePoints, nearestPly } from "./sparkline.js";
 
 const $ = (id) => document.getElementById(id);
 
 let state = null; // last server state message
 let lastStats = null;
+// PV arrows (§11.1): the position they were computed for, and — when the
+// engine just played pv[0] — the continuation to show on the next position
+let arrowsFen = null;
+let pendingArrows = null;
+let sparkPts = []; // sparkline points of the last render, for clicks (§11.2)
+let autoplayTimer = null; // pending next autoplay search (§11.3)
+// §11.3: reused-tree searches can converge in milliseconds, so a Stop click
+// usually lands *after* the search already ended naturally — the stop_reason
+// alone cannot pause the chain. Every user command holds it instead; only
+// deliberately starting a search (Move!, autoreply) re-arms it.
+let autoplayHold = false;
+
+/** Every explicit user command pauses the autoplay chain (§11.3). */
+function cancelAutoplay() {
+  clearTimeout(autoplayTimer);
+  autoplayTimer = null;
+  autoplayHold = true;
+}
 
 /** REST helper; returns the response JSON, or null on error (message shown). */
 async function api(path, body, method = "POST") {
@@ -31,6 +50,7 @@ const treeView = new TreeView($("tree"), {
   onNodeClick: (path) => {
     if (!confirm(`Play ${path.join(" ")} into the game?`)) return;
     treeView.clearStep();
+    cancelAutoplay();
     api("/api/goto", { path });
   },
   // fen: the base position of the client's tree snapshot (§10.1)
@@ -45,11 +65,14 @@ const treeView = new TreeView($("tree"), {
 const board = new Board($("board"), {
   onMove: async (uci) => {
     treeView.clearStep();
+    cancelAutoplay();
     const s = await api("/api/move", { uci });
     // the common human-vs-engine flow: answer automatically (toggleable);
     // in infinite mode (§10.3) the reply is a fresh analysis, not a move
-    if (s && !s.outcome && $("autoreply").checked)
+    if (s && !s.outcome && $("autoreply").checked) {
+      autoplayHold = false; // deliberate start re-arms the chain (§11.3)
       api("/api/search/start", { analyse: $("infinite").checked });
+    }
   },
 });
 
@@ -91,6 +114,26 @@ function handle(event) {
     treeView.cPuct = event.limits?.c_puct ?? 1.5; // hover PUCT breakdown
   } else if (event.type === "search_end") {
     renderStats(event);
+    // the engine plays pv[0]: keep the expected continuation as arrows on
+    // the position that is about to arrive (§11.1)
+    pendingArrows =
+      event.played_move && event.pv[0] === event.played_move ? event.pv.slice(1, 4) : null;
+    // autoplay (§11.3): chain the next search only when the chain is armed
+    // and the ending was natural (the reason check covers stops issued by
+    // other clients, which this tab never held)
+    if (
+      !autoplayHold &&
+      $("autoplay").checked &&
+      event.played_move &&
+      event.stop_reason !== "interrupted"
+    ) {
+      clearTimeout(autoplayTimer);
+      autoplayTimer = setTimeout(() => {
+        autoplayTimer = null;
+        if (!autoplayHold && $("autoplay").checked && state && !state.searching && !state.outcome)
+          api("/api/search/start");
+      }, 600);
+    }
     setMessage(
       event.played_move
         ? `engine played ${event.played_move} (${event.stop_reason})`
@@ -102,10 +145,18 @@ function handle(event) {
 // ---- rendering --------------------------------------------------------------
 
 function renderState(s) {
+  const fenChanged = state?.fen !== s.fen;
   state = s;
   if (!editMode.active) {
     const humanTurn = !s.searching && !s.outcome;
     board.setState(s, humanTurn);
+  }
+  if (fenChanged && s.fen !== arrowsFen) {
+    // §11.1: after the engine's move show the PV continuation, otherwise
+    // (human move, takeback, new game, edit) the arrows are stale — clear
+    board.setArrows(pendingArrows ?? []);
+    arrowsFen = pendingArrows ? s.fen : null;
+    pendingArrows = null;
   }
 
   const infinite = $("infinite").checked;
@@ -134,6 +185,7 @@ function renderState(s) {
     // takeback (§3.3): rewind the game to just after this move
     span.addEventListener("click", () => {
       treeView.clearStep();
+      cancelAutoplay();
       api("/api/goto", { ply: i + 1 });
     });
     list.appendChild(span);
@@ -142,6 +194,53 @@ function renderState(s) {
 
   // keep the last search's metrics readable when idle (§10.1)
   if (!s.searching) renderIdleFooter();
+  renderSparkline();
+}
+
+/** Eval history over the game (§11.2), plus a live point while searching. */
+function renderSparkline() {
+  const canvas = $("sparkline");
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (!w || !state) return; // panel hidden (edit mode)
+  const entries = state.eval_history ?? [];
+  const live =
+    state.searching && lastStats
+      ? { ply: state.history.length, white_win_prob: lastStats.white_win_prob }
+      : null;
+  // minimum span so early-game points don't stretch across the full width
+  const span = Math.max(12, state.history.length, entries.at(-1)?.ply ?? 0, live?.ply ?? 0);
+  sparkPts = sparklinePoints(entries, span, w, h);
+
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.strokeStyle = "#4a4641"; // 50% midline
+  ctx.beginPath();
+  ctx.moveTo(0, h / 2);
+  ctx.lineTo(w, h / 2);
+  ctx.stroke();
+  ctx.strokeStyle = "#e8e6e3";
+  ctx.fillStyle = "#e8e6e3";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  sparkPts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+  ctx.stroke();
+  for (const p of sparkPts) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+  if (live) {
+    const [p] = sparklinePoints([live], span, w, h);
+    ctx.strokeStyle = "#6d9f4e"; // hollow accent dot: still moving
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, 2 * Math.PI);
+    ctx.stroke();
+  }
 }
 
 function renderIdleFooter() {
@@ -173,6 +272,9 @@ function renderStats(st) {
   $("eval-label").textContent = (cp >= 0 ? "+" : "") + (cp / 100).toFixed(2);
   $("pv").textContent = st.pv_san.length ? st.pv_san.join(" ") : "—";
   treeView.setPV(st.pv, st.pv_san);
+  board.setArrows(st.pv.slice(0, 3)); // §11.1: live PV on the board
+  arrowsFen = state?.fen ?? null;
+  renderSparkline(); // live eval point (§11.2)
   $("status-live").textContent = statsLine(st);
 }
 
@@ -184,11 +286,16 @@ function setMessage(text) {
 
 $("go").addEventListener("click", () => {
   treeView.clearStep();
+  cancelAutoplay();
   if (state?.searching) api("/api/search/stop");
-  else api("/api/search/start", { analyse: $("infinite").checked });
+  else {
+    autoplayHold = false; // Move! (re)arms the autoplay chain (§11.3)
+    api("/api/search/start", { analyse: $("infinite").checked });
+  }
 });
 $("play-best").addEventListener("click", () => {
   treeView.clearStep();
+  cancelAutoplay();
   api("/api/play/best");
 });
 $("infinite").addEventListener("change", () => {
@@ -196,15 +303,31 @@ $("infinite").addEventListener("change", () => {
 });
 $("step").addEventListener("click", () => {
   // §10.4: highlight what the step(s) changed — capture the baseline first
+  cancelAutoplay();
   treeView.markStep();
   api("/api/search/step", { steps: Math.max(1, Number($("step-n").value) || 1) });
 });
 $("new").addEventListener("click", () => {
   treeView.clearStep();
+  cancelAutoplay();
   api("/api/new");
+});
+$("autoplay").addEventListener("change", (e) => {
+  if (!e.target.checked) cancelAutoplay();
+});
+$("sparkline").addEventListener("click", (e) => {
+  // §11.2: click a point to take the game back to that ply
+  if (!state || state.searching) return;
+  const x = e.clientX - e.target.getBoundingClientRect().left;
+  const ply = nearestPly(sparkPts, x);
+  if (ply === null || ply >= state.history.length) return;
+  treeView.clearStep();
+  cancelAutoplay();
+  api("/api/goto", { ply });
 });
 $("flip").addEventListener("click", () => board.flip());
 $("edit").addEventListener("click", () => {
+  cancelAutoplay();
   if (editMode.active) return editMode.exit();
   if (!state) return;
   if (state.searching) return setMessage("stop the search before editing");

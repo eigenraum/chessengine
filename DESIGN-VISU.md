@@ -430,6 +430,12 @@ Three quality-of-life features on top of V4; no engine (C++) changes.
   **■ Stop** (which still plays the best-so-far move), New game, takeback,
   or edit all end with `interrupted` and stop the chain; the checkbox stays
   as the user set it. Checking it arms the loop; **▶ Move!** starts it.
+- **Stop-vs-convergence race:** reused-tree searches can converge within
+  milliseconds, so a Stop click usually lands *after* the search already
+  ended naturally — the `stop_reason` alone cannot pause the chain. The
+  client therefore also keeps a hold flag: every user command sets it (chain
+  paused), deliberately starting a search (Move!, autoreply) clears it. The
+  `stop_reason` check stays to cover stops issued by *other* clients.
 - Client-driven (the server keeps no autoplay state): the search_end → state
   sequence triggers the next `/api/search/start`.
 
