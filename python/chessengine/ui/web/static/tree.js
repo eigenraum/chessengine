@@ -45,17 +45,10 @@ export function pathKeys(tree) {
   return keys;
 }
 
-/** Collapsed mode (§10.2): derive a tree holding only the PV chain; at each
- * PV node the branches not taken fold into one bundle pseudo-node (move "…",
- * `bundle[i]` = {branches, sims}). Simulations through the fold are computed
- * by subtraction (visits[node] − visits[pv child] − 1 own evaluation; the
- * root is never evaluated itself), so pruned-away siblings are counted too.
- */
-export function collapseTree(tree, pv) {
-  const n = tree.parent.length;
-  const children = Array.from({ length: n }, () => []);
-  for (let i = 1; i < n; i++) children[tree.parent[i]].push(i);
-
+/** Shared scaffold for derived trees (collapsed/compressed): a fresh row
+ * array seeded with the root, plus a pushRow() that appends a real or
+ * bundle pseudo-node (bundle = {branches, sims}) and returns its row index. */
+function deriveTreeBuilder(tree) {
   const out = {
     ...tree,
     parent: [-1],
@@ -76,6 +69,21 @@ export function collapseTree(tree, pv) {
     out.bundle.push(bundle);
     return out.parent.length - 1;
   };
+  return { out, pushRow };
+}
+
+/** Collapsed mode (§10.2): derive a tree holding only the PV chain; at each
+ * PV node the branches not taken fold into one bundle pseudo-node (move "…",
+ * `bundle[i]` = {branches, sims}). Simulations through the fold are computed
+ * by subtraction (visits[node] − visits[pv child] − 1 own evaluation; the
+ * root is never evaluated itself), so pruned-away siblings are counted too.
+ */
+export function collapseTree(tree, pv) {
+  const n = tree.parent.length;
+  const children = Array.from({ length: n }, () => []);
+  for (let i = 1; i < n; i++) children[tree.parent[i]].push(i);
+
+  const { out, pushRow } = deriveTreeBuilder(tree);
   const foldedSims = (node, keptChild) => {
     let visible = 0;
     for (const c of children[node]) if (c !== keptChild) visible += tree.visits[c];
@@ -113,6 +121,51 @@ export function collapseTree(tree, pv) {
       branches: tipBranches,
       sims: foldedSims(node, null),
     });
+  return out;
+}
+
+/** Partial-compression mode: at every branching node (not just the PV),
+ * keep only the top-`k` children by visit count and fold the rest into one
+ * bundle pseudo-node (move "…", `bundle[i]` = {branches, sims}). `expanded`
+ * is a set of path keys (§5.2) the user has clicked open — those nodes show
+ * every child instead (their own children are still top-k compressed). */
+export function compressTree(tree, k, expanded) {
+  const n = tree.parent.length;
+  const children = Array.from({ length: n }, () => []);
+  for (let i = 1; i < n; i++) children[tree.parent[i]].push(i);
+  const compare = SORT_CRITERIA.visits(tree);
+  for (const list of children) list.sort(compare);
+  const keys = pathKeys(tree);
+
+  const { out, pushRow } = deriveTreeBuilder(tree);
+  const outRow = new Array(n);
+  outRow[0] = 0;
+  const stack = [0];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    const kids = children[node];
+    const showAll = expanded.has(keys[node]);
+    const visible = showAll ? kids : kids.slice(0, k);
+    for (const c of visible) {
+      outRow[c] = pushRow(
+        outRow[node],
+        tree.move[c],
+        tree.visits[c],
+        tree.q[c],
+        tree.prior[c],
+        tree.children_total[c],
+        null,
+      );
+      stack.push(c);
+    }
+    if (!showAll && kids.length > k) {
+      const hidden = kids.slice(k);
+      let sims = 0;
+      for (const c of hidden) sims += tree.visits[c];
+      const branches = Math.max(tree.children_total[node] - visible.length, hidden.length);
+      pushRow(outRow[node], "…", sims, 0, 0, 0, { branches, sims });
+    }
+  }
   return out;
 }
 
@@ -210,6 +263,9 @@ export class TreeView {
     this.pv = [];
     this.pvSan = [];
     this.collapsed = false; // §10.2 collapsed mode
+    this.compressed = false; // partial-compression mode: top-k children per node
+    this.compressK = 4;
+    this.expandedBundles = new Set(); // path keys the user expanded (compressed mode)
     this.cPuct = 1.5; // for the hover PUCT breakdown; app updates from config
     this.paths = null; // paths[i]: UCI move path from the game position
     this.pathIndex = null; // path key ("e2e4 e7e5") -> row
@@ -249,6 +305,8 @@ export class TreeView {
   }
 
   setTree(msg) {
+    // a new base position invalidates expand state from the old tree's paths
+    if (this.raw && this.raw.fen !== msg.fen) this.expandedBundles.clear();
     this.raw = msg;
     this.fens.clear();
     this.fensPending.clear();
@@ -267,9 +325,43 @@ export class TreeView {
   setCollapsed(on) {
     if (this.collapsed === on) return;
     this.collapsed = on;
+    if (on && this.compressed) {
+      this.compressed = false;
+      this.callbacks.onCompressChange?.(false);
+    }
     this.callbacks.onCollapseChange?.(on);
     this.userMoved = false;
     if (this.raw) this._rebuild();
+  }
+
+  /** Toggle partial-compression mode: top-`compressK` children per node,
+   * the rest folded into a collector bundle (click to expand it in place). */
+  setCompressed(on) {
+    if (this.compressed === on) return;
+    this.compressed = on;
+    if (on && this.collapsed) {
+      this.collapsed = false;
+      this.callbacks.onCollapseChange?.(false);
+    }
+    this.callbacks.onCompressChange?.(on);
+    this.userMoved = false;
+    if (this.raw) this._rebuild();
+  }
+
+  /** Change K (children kept per node) and re-derive if compression is active. */
+  setCompressK(k) {
+    const v = Math.max(1, Math.round(k) || 4);
+    if (this.compressK === v) return;
+    this.compressK = v;
+    if (this.compressed && this.raw) this._rebuild();
+  }
+
+  /** Un-fold one node's collector bundle in place (§ compressed mode). */
+  _expandBundle(hit) {
+    this._ensurePaths();
+    const key = this.paths[this.tree.parent[hit]].join(" ");
+    this.expandedBundles.add(key);
+    this._rebuild();
   }
 
   /** Capture pre-step visit counts; draw() highlights what a step changed. */
@@ -291,7 +383,11 @@ export class TreeView {
 
   /** Recompute the drawn tree (raw or collapsed) and its layout. */
   _rebuild() {
-    this.tree = this.collapsed ? collapseTree(this.raw, this.pv) : this.raw;
+    this.tree = this.collapsed
+      ? collapseTree(this.raw, this.pv)
+      : this.compressed
+        ? compressTree(this.raw, this.compressK, this.expandedBundles)
+        : this.raw;
     this.layout = layoutTree(this.tree);
     this.paths = null;
     this.pathIndex = null;
@@ -321,9 +417,9 @@ export class TreeView {
    * known nodes get fresher stats, new ones are appended (§5.2 zooming into
    * pruned regions). Appending keeps parent[i] < i, so layout stays valid. */
   graftDetail(rootPath, msg) {
-    // while collapsed the drawn tree is derived — don't graft into it (any
-    // in-flight response is applied after uncollapsing via the next request)
-    if (this.collapsed || !this.tree || !msg || msg.parent.length <= 1) return;
+    // while collapsed/compressed the drawn tree is derived — don't graft into
+    // it (any in-flight response is applied via the next request instead)
+    if (this.collapsed || this.compressed || !this.tree || !msg || msg.parent.length <= 1) return;
     this._ensurePaths();
     const anchor = this.pathIndex.get(rootPath.join(" "));
     if (anchor === undefined) return; // a newer base snapshot replaced the tree
@@ -477,7 +573,11 @@ export class TreeView {
     if (!this.tree || !this.callbacks.onNodeClick) return;
     const hit = this._hitTest(mx, my);
     if (hit === null) return;
-    if (this.tree.bundle && this.tree.bundle[hit]) return this.setCollapsed(false);
+    if (this.tree.bundle && this.tree.bundle[hit]) {
+      if (this.collapsed) return this.setCollapsed(false);
+      if (this.compressed) return this._expandBundle(hit);
+      return;
+    }
     if (hit === 0) return; // root = current position, no-op
     this._ensurePaths();
     const path = this.paths[hit];
@@ -489,19 +589,18 @@ export class TreeView {
     }, 260);
   }
 
-  /** Node under (mx,my) in css px, or null. Discs at L1, card boxes at L2+;
-   * L0 rows are subpixel — nothing to click. */
+  /** Node under (mx,my) in css px, or null. Discs at L0/L1 (even sub-pixel
+   * rows keep a fixed hoverable radius), card boxes at L2+. */
   _hitTest(mx, my) {
     const { tree, layout, tf } = this;
     const rowPx = ROW * tf.ky;
     const lod = this._lod(rowPx);
-    if (lod === 0) return null;
     let best = null;
     let bestDist = Infinity;
     for (let i = 0; i < tree.parent.length; i++) {
       const x = layout.x[i] * tf.kx + tf.x;
       const y = layout.y[i] * tf.ky + tf.y;
-      if (lod === 1) {
+      if (lod <= 1) {
         const r = Math.max(this._discRadius(i, rowPx), 7);
         const d2 = (mx - x) ** 2 + (my - y) ** 2;
         if (d2 <= r * r && d2 < bestDist) {
@@ -550,7 +649,7 @@ export class TreeView {
   /** Zooming into pruned regions (§5.2): fetch the subtree of visible nodes
    * whose children were cut off by the snapshot budget. */
   _requestDetail(rows) {
-    if (this.collapsed) return; // the fold is intentional, don't unfold it
+    if (this.collapsed || this.compressed) return; // the fold is intentional, don't unfold it
     if (!this.callbacks.fetchDetail || rows.length === 0) return;
     this._ensurePaths();
     const candidates = rows
@@ -669,7 +768,7 @@ export class TreeView {
     };
     const edgeVisible = (i) => visible(i) || visible(tree.parent[i]);
 
-    ctx.strokeStyle = "rgba(150, 145, 138, 0.08)";
+    ctx.strokeStyle = "rgba(200, 196, 190, 0.18)";
     ctx.lineWidth = 0.5;
     ctx.beginPath();
     for (let i = 1; i < n; i++) if (edgeVisible(i)) segment(tree.parent[i], i);
@@ -678,7 +777,7 @@ export class TreeView {
     const bucketOf = (i) =>
       Math.min(Math.round(3 * Math.sqrt(tree.visits[i] / rootVisits) * 2), 7);
     for (let bucket = 1; bucket <= 7; bucket++) {
-      ctx.strokeStyle = bucket <= 2 ? "rgba(190, 185, 178, 0.35)" : "rgba(190, 185, 178, 0.6)";
+      ctx.strokeStyle = bucket <= 2 ? "rgba(212, 208, 202, 0.45)" : "rgba(212, 208, 202, 0.75)";
       ctx.lineWidth = 0.5 + bucket / 2;
       ctx.beginPath();
       for (let i = 1; i < n; i++)
@@ -767,8 +866,9 @@ export class TreeView {
     ctx.stroke();
   }
 
-  /** Collapsed-mode bundle (§10.2): the branches not taken, folded into one
-   * stacked pseudo-node. Clicking it un-collapses. */
+  /** Folded siblings, stacked pseudo-node: the branches not on the PV
+   * (collapsed mode, click un-collapses) or beyond top-K (compressed mode,
+   * click expands that node in place). */
   _bundle(i, rowPx, lod) {
     const { ctx, tree, tf } = this;
     const x = this.layout.x[i] * tf.kx + tf.x;
