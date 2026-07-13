@@ -75,8 +75,8 @@ export class TreeView {
     canvas.addEventListener("pointerdown", (e) => this._dragStart(e));
     canvas.addEventListener("pointermove", (e) => this._dragMove(e));
     canvas.addEventListener("pointerup", () => (this.dragFrom = null));
-    new ResizeObserver(() => this._resize()).observe(canvas);
-    this._resize();
+    new ResizeObserver(() => this.refresh()).observe(canvas);
+    this.refresh();
   }
 
   setTree(msg) {
@@ -93,12 +93,16 @@ export class TreeView {
 
   // ---- viewport -----------------------------------------------------------
 
-  _resize() {
+  /** Re-read the canvas size and redraw. On a hidden tab the canvas is 0×0
+   * and trees arriving then can't be fitted, so when the tab (re)appears the
+   * view must be fitted against the now-real size. */
+  refresh() {
     const dpr = window.devicePixelRatio || 1;
     this.canvas.width = this.canvas.clientWidth * dpr;
     this.canvas.height = this.canvas.clientHeight * dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in css px below
-    if (this.tree) this.draw();
+    if (this.tree && !this.userMoved) this._fit();
+    this.draw();
   }
 
   _fit() {

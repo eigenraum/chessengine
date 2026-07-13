@@ -133,11 +133,12 @@ function showTab(tab) {
   $("tab-tree").classList.toggle("active", tab === "tree");
   history.replaceState(null, "", tab === "tree" ? "#tree" : "#");
   if (tab === "tree") {
-    // canvas was display:none and has no size yet — refresh, then make sure
-    // there is something to show even before the first search of a session
+    // while hidden the canvas was 0×0: its buffer is empty and trees that
+    // arrived over the socket could not be fitted — refresh against the real
+    // size, and fetch a tree if none has arrived yet this session
     requestAnimationFrame(() => {
+      treeView.refresh();
       if (!treeView.tree) fetch("/api/tree").then((r) => r.json()).then((t) => treeView.setTree(t));
-      else treeView.draw();
     });
   }
 }
