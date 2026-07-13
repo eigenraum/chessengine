@@ -71,6 +71,27 @@ class TreeSnapshot:
         return len(self.fens)
 
 
+@dataclass
+class TreeView:
+    """Live view of the search tree for the GUI (DESIGN-VISU.md section 5.2).
+
+    Flat parallel arrays, one row per node; parent[i] < i indexes into the
+    same arrays (-1 for the subtree root, row 0). q[i] is the win frequency
+    from the perspective of the player who moved into node i. Plain lists:
+    this goes straight into a JSON WebSocket message.
+    """
+
+    parent: list[int]
+    move: list[str]  # UCI; "" for the subtree root
+    visits: list[int]
+    q: list[float]
+    prior: list[float]
+    children_total: list[int]
+
+    def __len__(self) -> int:
+        return len(self.parent)
+
+
 def _stats_kwargs(cxx) -> dict:
     return dict(
         simulations=cxx.simulations,
@@ -116,6 +137,25 @@ class Engine:
             values=np.asarray(snap.values, dtype=np.float32),
             moves=[list(m) for m in snap.moves],
             child_visits=[list(v) for v in snap.child_visits],
+        )
+
+    def tree_view(
+        self,
+        max_nodes: int = 20_000,
+        min_visits: int = 1,
+        root_path: list[str] | None = None,
+    ) -> TreeView:
+        """Live tree view: the max_nodes most-visited nodes of the subtree at
+        root_path (UCI moves from the search root). Unlike tree_snapshot,
+        this is safe to call while a search is running."""
+        view = self._engine.tree_view(max_nodes, min_visits, root_path or [])
+        return TreeView(
+            parent=list(view.parent),
+            move=list(view.move),
+            visits=list(view.visits),
+            q=[round(v, 4) for v in view.q],
+            prior=[round(p, 4) for p in view.prior],
+            children_total=list(view.children_total),
         )
 
     def search(self, limits: SearchLimits | None = None) -> SearchResult:

@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <deque>
+#include <queue>
 #include <stdexcept>
 
 #include "core/movegen.h"
@@ -109,6 +110,71 @@ TreeSnapshot Search::snapshot(uint32_t min_visits, int max_depth) const {
         snap.child_visits.push_back(std::move(child_visits));
     }
     return snap;
+}
+
+TreeView Search::tree_view(uint32_t max_nodes, uint32_t min_visits,
+                           const std::vector<core::Move>& root_path) const {
+    TreeView view;
+    if (!tree_) return view;
+    const Tree& tree = *tree_;
+
+    // Resolve root_path by matching child moves; empty view if any hop is
+    // missing (the client falls back to requesting the search root).
+    uint32_t start = tree.root();
+    for (core::Move move : root_path) {
+        const Node& node = tree[start];
+        if (node.expand_state.load(std::memory_order_acquire) != ExpandState::EXPANDED)
+            return view;
+        uint32_t next = Tree::NO_NODE;
+        for (uint32_t i = 0; i < node.num_children; ++i)
+            if (tree[node.first_child + i].move == move) next = node.first_child + i;
+        if (next == Tree::NO_NODE) return view;
+        start = next;
+    }
+
+    // Best-first walk: always emit the most-visited frontier node next.
+    // Children enter the frontier only after their parent was emitted, so
+    // parent[] indices always point at earlier rows.
+    struct Item {
+        uint32_t visits;
+        uint32_t index;
+        int32_t parent_row;
+    };
+    auto by_visits = [](const Item& a, const Item& b) { return a.visits < b.visits; };
+    std::priority_queue<Item, std::vector<Item>, decltype(by_visits)> frontier(by_visits);
+    frontier.push({tree[start].visits.load(std::memory_order_relaxed), start, -1});
+
+    while (!frontier.empty() && view.parent.size() < max_nodes) {
+        const Item item = frontier.top();
+        frontier.pop();
+        const Node& node = tree[item.index];
+        const int32_t row = int32_t(view.parent.size());
+
+        view.parent.push_back(item.parent_row);
+        view.move.push_back(item.parent_row < 0 ? std::string() : node.move.uci());
+        view.visits.push_back(item.visits);
+        const double q = item.visits
+                             ? node.value_sum.load(std::memory_order_relaxed) / item.visits
+                             : 0.5;
+        view.q.push_back(float(q));
+        view.prior.push_back(node.prior);
+
+        uint32_t children_total = 0;
+        // Acquire pairs with the release store in maybe_expand: only then are
+        // first_child/num_children and the children's move/prior published.
+        if (node.expand_state.load(std::memory_order_acquire) == ExpandState::EXPANDED) {
+            children_total = node.num_children;
+            for (uint32_t i = 0; i < node.num_children; ++i) {
+                const uint32_t child = node.first_child + i;
+                const uint32_t child_visits =
+                    tree[child].visits.load(std::memory_order_relaxed);
+                if (child_visits >= std::max(min_visits, 1u))
+                    frontier.push({child_visits, child, row});
+            }
+        }
+        view.children_total.push_back(children_total);
+    }
+    return view;
 }
 
 void Search::maybe_expand(uint32_t index, const core::Board& board) {

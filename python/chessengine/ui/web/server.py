@@ -25,6 +25,8 @@ from chessengine.game import Game, IllegalMoveError
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATS_INTERVAL_S = 0.25  # ~4 Hz stats stream (DESIGN-VISU.md section 5.1)
+TREE_EVERY_TICKS = 4  # tree snapshots at ~1 Hz (section 5.2)
+TREE_MAX_NODES = 20_000  # node budget per snapshot
 
 
 class Session:
@@ -94,6 +96,20 @@ class Session:
             "elapsed_ms": stats.elapsed_ms,
             "sims_per_s": round(sims_per_s),
             "nodes_per_s": round(nodes_per_s),
+        }
+
+    def tree_event(self) -> dict:
+        """Bounded snapshot of the search tree; safe while searching."""
+        view = self.engine.tree_view(max_nodes=TREE_MAX_NODES)
+        return {
+            "type": "tree",
+            "turn": "w" if self.game.turn == chess.WHITE else "b",
+            "parent": view.parent,
+            "move": view.move,
+            "visits": view.visits,
+            "q": view.q,
+            "prior": view.prior,
+            "children_total": view.children_total,
         }
 
     def _pv_san(self, pv: list[str]) -> list[str]:
@@ -171,6 +187,7 @@ class Session:
         """Stream stats while the engine runs, then play its move."""
         last_sims = last_nodes = 0
         last_t = time.monotonic()
+        tick = 0
         while True:  # do-while: even the shortest search emits one stats event
             stats = self.engine.stats()
             now = time.monotonic()
@@ -183,11 +200,16 @@ class Session:
                 )
             )
             last_sims, last_nodes, last_t = stats.simulations, stats.nodes, now
+            if tick % TREE_EVERY_TICKS == 0:
+                await self.broadcast(self.tree_event())
+            tick += 1
             if not self.engine.running():
                 break
             await asyncio.sleep(STATS_INTERVAL_S)
 
         result = self.engine.stop()
+        # final tree view of the decided position, before advance() re-roots it
+        await self.broadcast(self.tree_event())
         played = None
         try:
             if self._play_on_stop and result.best_move and not self.game.is_over():
@@ -238,6 +260,10 @@ def create_app(session: Session | None = None) -> FastAPI:
     async def post_new(req: NewGameRequest | None = None) -> dict:
         await session.new_game(req.fen if req else None)
         return session.state()
+
+    @app.get("/api/tree")
+    async def get_tree() -> dict:
+        return session.tree_event()
 
     @app.post("/api/search/start")
     async def post_search_start() -> dict:

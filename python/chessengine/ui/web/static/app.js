@@ -2,11 +2,14 @@
 // Holds no game logic; renders whatever the server broadcasts.
 
 import { Board } from "./board.js";
+import { TreeView } from "./tree.js";
 
 const $ = (id) => document.getElementById(id);
 
 let state = null; // last server state message
 let lastStats = null;
+
+const treeView = new TreeView($("tree"));
 
 const board = new Board($("board"), {
   onMove: async (uci) => {
@@ -46,6 +49,7 @@ function connect() {
 function handle(event) {
   if (event.type === "state") renderState(event);
   else if (event.type === "stats") renderStats(event);
+  else if (event.type === "tree") treeView.setTree(event);
   else if (event.type === "search_end") {
     renderStats(event);
     setMessage(
@@ -101,6 +105,7 @@ function renderStats(st) {
   const cp = st.white_cp;
   $("eval-label").textContent = (cp >= 0 ? "+" : "") + (cp / 100).toFixed(2);
   $("pv").textContent = st.pv_san.length ? st.pv_san.join(" ") : "—";
+  treeView.setPV(st.pv);
   $("status-live").textContent =
     `sims ${fmt(st.simulations)} · nodes ${fmt(st.nodes)} · ` +
     `${fmt(st.sims_per_s)} sims/s · ${fmt(st.nodes_per_s)} nodes/s · ` +
@@ -119,6 +124,27 @@ $("go").addEventListener("click", () =>
 $("new").addEventListener("click", () => api("/api/new"));
 $("flip").addEventListener("click", () => board.flip());
 
+// ---- tabs -------------------------------------------------------------------
+
+function showTab(tab) {
+  $("view-board").hidden = tab !== "board";
+  $("view-tree").hidden = tab !== "tree";
+  $("tab-board").classList.toggle("active", tab === "board");
+  $("tab-tree").classList.toggle("active", tab === "tree");
+  history.replaceState(null, "", tab === "tree" ? "#tree" : "#");
+  if (tab === "tree") {
+    // canvas was display:none and has no size yet — refresh, then make sure
+    // there is something to show even before the first search of a session
+    requestAnimationFrame(() => {
+      if (!treeView.tree) fetch("/api/tree").then((r) => r.json()).then((t) => treeView.setTree(t));
+      else treeView.draw();
+    });
+  }
+}
+$("tab-board").addEventListener("click", () => showTab("board"));
+$("tab-tree").addEventListener("click", () => showTab("tree"));
+
 // render immediately from REST; the socket takes over for live updates
 fetch("/api/state").then((r) => r.json()).then(renderState);
+if (location.hash === "#tree") showTab("tree");
 connect();

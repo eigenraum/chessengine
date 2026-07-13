@@ -93,10 +93,18 @@ def test_search_stop_plays_best_so_far(client):
     assert len(state["history"]) == 1
 
 
-def test_move_rejected_while_searching(client):
-    client.post("/api/search/start")
-    assert client.post("/api/move", json={"uci": "e2e4"}).status_code == 409
-    wait_for_idle(client)
+def test_move_rejected_while_searching():
+    # own session with an effectively unbounded search: the tiny shared-fixture
+    # search can finish before the move request is even handled
+    session = Session(
+        config=EngineConfig(workers=1),
+        limits=SearchLimits(max_time_ms=30_000, convergence_window=0),
+    )
+    with TestClient(create_app(session)) as client:
+        client.post("/api/search/start")
+        assert client.post("/api/move", json={"uci": "e2e4"}).status_code == 409
+        client.post("/api/search/stop")
+        wait_for_idle(client)
 
 
 def test_websocket_streams_state_and_search(client):
@@ -124,6 +132,36 @@ def test_websocket_streams_state_and_search(client):
         # final state after the engine's move
         state = wait_for_idle(client)
         assert len(state["history"]) == 1
+
+
+def test_tree_endpoint(client):
+    tree = client.get("/api/tree").json()
+    assert tree["type"] == "tree"
+    assert tree["turn"] == "w"
+    assert tree["parent"] == [-1]  # fresh session: bare root
+    client.post("/api/search/start")
+    wait_for_idle(client)
+    tree = client.get("/api/tree").json()
+    assert len(tree["parent"]) > 10
+    assert len(tree["parent"]) == len(tree["move"]) == len(tree["visits"])
+
+
+def test_websocket_streams_tree(client):
+    with client.websocket_connect("/ws/events") as ws:
+        assert ws.receive_json()["type"] == "state"
+        client.post("/api/search/start")
+        tree_events = []
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            event = ws.receive_json()
+            if event["type"] == "tree":
+                tree_events.append(event)
+            if event["type"] == "search_end":
+                break
+        # at least the first-tick and the final snapshot
+        assert len(tree_events) >= 2
+        assert len(tree_events[-1]["parent"]) > 10
+        wait_for_idle(client)
 
 
 def test_index_served(client):

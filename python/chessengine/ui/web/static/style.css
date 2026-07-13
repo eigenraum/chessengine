@@ -30,6 +30,10 @@ header {
 header h1 { font-size: 1.1rem; margin: 0; }
 header #turn { color: var(--muted); margin-left: auto; }
 
+#tabs { display: flex; gap: 0; border: 1px solid #4a4641; border-radius: 4px; overflow: hidden; }
+.tab { border: none; border-radius: 0; background: transparent; }
+.tab.active { background: #4a4641; }
+
 button {
   background: #3d3a36;
   color: var(--text);
@@ -59,6 +63,16 @@ main {
   gap: 1rem;
   padding: 1rem;
 }
+main[hidden] { display: none; }
+
+#view-tree { padding: 0; align-items: stretch; }
+#tree {
+  flex: 1;
+  min-height: 0;
+  touch-action: none;
+  cursor: grab;
+}
+#tree:active { cursor: grabbing; }
 
 /* eval bar */
 #eval-bar {

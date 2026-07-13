@@ -61,6 +61,28 @@ struct TreeSnapshot {
     std::vector<std::vector<uint32_t>> child_visits;
 };
 
+// Live debug view of the search tree (DESIGN-VISU.md section 5.2): the
+// `max_nodes` most-visited nodes of the subtree at `root_path`, as flat
+// parallel arrays. parent[i] indexes into these same arrays and is always
+// < i (-1 for the subtree root, which is row 0). q[i] = value_sum/visits is
+// the win frequency from the perspective of the player who moved INTO node i
+// (the node-statistics convention). children_total[i] counts all legal
+// children, so a client can tell how many were cut off by the node budget.
+//
+// Unlike snapshot(), this may be called WHILE a search is running: nodes
+// never move, children are only traversed once expand_state is EXPANDED
+// (acquire, pairing with the release store in maybe_expand), and the
+// visit/value loads are racy-but-monotonic like stats() — numbers may be a
+// few simulations stale or mutually inconsistent, which is fine for display.
+struct TreeView {
+    std::vector<int32_t> parent;
+    std::vector<std::string> move;  // UCI; "" for the subtree root
+    std::vector<uint32_t> visits;
+    std::vector<float> q;
+    std::vector<float> prior;
+    std::vector<uint32_t> children_total;
+};
+
 // One MCTS search over one tree, tree-parallel with virtual loss: all worker
 // threads share the arena, visit counts and value sums are atomics, and the
 // expand CAS plus virtual loss keep them coordinated. A controller thread
@@ -81,6 +103,13 @@ public:
     // Exports the tree for training: nodes with at least min_visits, at most
     // max_depth plies below the root.
     TreeSnapshot snapshot(uint32_t min_visits, int max_depth) const;
+
+    // Live view for the GUI (see TreeView). Best-first by visit count from
+    // the node reached by walking root_path (empty = the search root); nodes
+    // below min_visits are skipped. Empty view if the path is not in the
+    // tree. Safe to call while a search is running.
+    TreeView tree_view(uint32_t max_nodes, uint32_t min_visits,
+                       const std::vector<core::Move>& root_path) const;
 
     SearchResult run(const SearchLimits& limits);  // blocking
     void start(const SearchLimits& limits);        // non-blocking, for the GUI
