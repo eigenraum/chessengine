@@ -230,6 +230,8 @@ export class TreeView {
     // rows need independent scales; zooming moves both together.
     this.tf = { x: 40, y: 40, kx: 1, ky: 1 };
     this.userMoved = false; // stop auto-fitting once the user pans/zooms
+    this.wholeTree = false; // set by the ⌂ button: ignore MIN_ROW_PX so the
+    // whole tree fits, even past disc level; cleared on the next manual pan/zoom
 
     this.tip = this._overlay("tree-tip"); // hover tooltip (§10.2)
     this.nav = this._overlay("tree-nav"); // navigation chips (§10.2)
@@ -385,14 +387,17 @@ export class TreeView {
     const worldW = this.layout.maxX + DX;
     const worldH = Math.max(this.layout.rows * ROW, ROW);
     this.tf.kx = Math.min((width - 80) / worldW, 1.3);
-    this.tf.ky = Math.max(Math.min((height - 80) / worldH, 1.5), MIN_ROW_PX / ROW);
+    const kyFit = Math.min((height - 80) / worldH, 1.5);
+    this.tf.ky = this.wholeTree ? kyFit : Math.max(kyFit, MIN_ROW_PX / ROW);
     this.tf.x = 40;
     this.tf.y = height / 2 - (worldH / 2) * this.tf.ky;
   }
 
-  /** Refit the whole tree, root at the left edge, and return to auto-fit. */
+  /** ⌂ button: really fit the whole tree, even past disc level — the point
+   * of this action is the overview, unlike the readable default fit. */
   focusRoot() {
     this.userMoved = false;
+    this.wholeTree = true;
     if (!this.tree) return;
     this._fit();
     this.draw();
@@ -413,6 +418,7 @@ export class TreeView {
     this.tf.kx = kx;
     this.tf.ky = ky;
     this.userMoved = true;
+    this.wholeTree = false;
     this.draw();
   }
 
@@ -449,7 +455,10 @@ export class TreeView {
     const dx = event.clientX - this.dragFrom.x;
     const dy = event.clientY - this.dragFrom.y;
     this.dragDist += Math.abs(dx) + Math.abs(dy);
-    if (this.dragDist > 4) this.userMoved = true;
+    if (this.dragDist > 4) {
+      this.userMoved = true;
+      this.wholeTree = false;
+    }
     this.tf.x += dx;
     this.tf.y += dy;
     this.dragFrom = { x: event.clientX, y: event.clientY };
@@ -641,6 +650,7 @@ export class TreeView {
     // and go back to auto-fit mode.
     if (width > 0 && this._offscreen(width, height)) {
       this.userMoved = false;
+      this.wholeTree = false;
       this._fit();
     }
 
@@ -673,7 +683,7 @@ export class TreeView {
     };
     const edgeVisible = (i) => visible(i) || visible(tree.parent[i]);
 
-    ctx.strokeStyle = "rgba(150, 145, 138, 0.08)";
+    ctx.strokeStyle = "rgba(200, 196, 190, 0.18)";
     ctx.lineWidth = 0.5;
     ctx.beginPath();
     for (let i = 1; i < n; i++) if (edgeVisible(i)) segment(tree.parent[i], i);
@@ -682,7 +692,7 @@ export class TreeView {
     const bucketOf = (i) =>
       Math.min(Math.round(3 * Math.sqrt(tree.visits[i] / rootVisits) * 2), 7);
     for (let bucket = 1; bucket <= 7; bucket++) {
-      ctx.strokeStyle = bucket <= 2 ? "rgba(190, 185, 178, 0.35)" : "rgba(190, 185, 178, 0.6)";
+      ctx.strokeStyle = bucket <= 2 ? "rgba(212, 208, 202, 0.45)" : "rgba(212, 208, 202, 0.75)";
       ctx.lineWidth = 0.5 + bucket / 2;
       ctx.beginPath();
       for (let i = 1; i < n; i++)
@@ -1000,6 +1010,7 @@ export class TreeView {
     this.tf.x = width / 2 - this.layout.x[row] * this.tf.kx;
     this.tf.y = height / 2 - this.layout.y[row] * this.tf.ky;
     this.userMoved = true;
+    this.wholeTree = false;
     this.draw();
   }
 
