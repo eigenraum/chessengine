@@ -253,8 +253,12 @@ The centipawn↔win-prob mapping constant (DESIGN.md §8) is served in
 - ✅ **V3 — interaction:** L3 board thumbnails, subtree detail-on-demand,
   click-to-explore, takeback via history click, parameter panel (both
   lifecycles), edit mode.
-- **V4 — polish:** PV arrows on the main board, eval history sparkline,
-  auto-play toggle, hover UCT breakdown.
+- **V4 — tree exploration & analysis modes:** see §10. Fixes (thumbnail
+  positions, idle stats), renderer upgrades (L0 dots, PV move labels,
+  collapsed mode, double-click zoom, hover info, navigation chips), and two
+  new search modes (infinite analysis, step-by-step).
+- **V5 — polish:** PV arrows on the main board, eval history sparkline,
+  auto-play toggle.
 
 Each milestone is shippable and demo-able on its own.
 
@@ -277,3 +281,108 @@ Each milestone is shippable and demo-able on its own.
    best-so-far move (§3.1).
 4. **CLI:** frozen at M5 feature level; remains the minimal fallback and
    smoke-test frontend while the web UI pulls ahead.
+
+## 10. V4 — Tree Exploration & Analysis Modes (accepted 2026-07-13)
+
+Scope agreed after using V3: two fixes, six renderer/interaction upgrades,
+two new search modes. All decisions below are user-confirmed.
+
+### 10.1 Fixes
+
+- **Board thumbnails show empty boards.** Root cause: the final tree snapshot
+  of a search is broadcast *before* the engine's move is pushed, so the
+  displayed tree is rooted one ply behind `game.fen()` — `/api/tree/fens`
+  then fails to replay every path and returns all-`null`. Fix: every `tree`
+  event carries the FEN of its root; `/api/tree/fens` takes that base FEN and
+  replays from it; the client sends the FEN captured with its current tree.
+  (Also fixes SAN card labels on post-search trees.)
+- **Status bar after search end** shows `idle · <last stats line>` (sims,
+  nodes, rates, best move) instead of a bare `idle`, so the last search's
+  metrics stay readable.
+
+### 10.2 Tree renderer & interaction
+
+- **L0 node dots:** at silhouette zoom, nodes are drawn as ~1.5 px discs,
+  fill = side to move (white/black), batched into two fill passes. The tree
+  is never "edges only" anymore.
+- **PV move labels:** each PV edge is annotated `♞ g8–f6` — Unicode figurine
+  (colored by mover) + from–to squares, built client-side from `stats.pv`
+  (UCI) and `pv_san` (piece letter). Drawn from L1 up, skipped when
+  `DX·kx` is too small to be readable.
+- **Collapsed mode (global toggle, ⊟/⊞ in the tree toolbar):** a derived
+  tree showing only the current PV chain as regular nodes; at each PV node
+  all non-PV siblings *and their subtrees* fold into one **bundle
+  pseudo-node** rendered distinctly (stacked outline) and labeled
+  `⑂ N branches · M sims` (N = `children_total − 1`; M = Σ visits of the
+  folded siblings — visits already count the whole subtree, so this is
+  exact). Clicking a bundle un-collapses. The collapse is a per-snapshot view
+  transform; live updates and PV changes re-derive it.
+- **Double-click zoom:** double-click zooms ×2 toward the cursor. To
+  disambiguate, a single click on a node arms its explore action with a
+  ~250 ms delay and a second click cancels it (a mis-fired explore opens a
+  confirm dialog — the latency is the lesser evil).
+- **Hover info (toolbar toggle, default off):** HTML tooltip overlay,
+  rAF-throttled hit tests over visible elements only.
+  - Over a *node*: mini board (via the fens cache), visits, win % / cp, and
+    the PUCT breakdown Q + U (U computable client-side from prior, visits,
+    parent visits and the served `c_puct`).
+  - Over an *edge*: the move sequence root → child (SAN where known, UCI
+    otherwise). Edges are hit-tested against the parent→child segment with a
+    ~6 px tolerance (the bezier bow is within it).
+- **Navigation chips:** at card zoom (L2+), overlay chips anchored to the
+  node nearest the viewport center let you jump around without zooming out;
+  clicking pans (zoom preserved) and chips update while panning:
+  - `⌂ root`,
+  - `← parent` — the previous move,
+  - `★ best` — the most-visited child of that parent, i.e. the move
+    considered best at the previous node,
+  - `↑ better` / `↓ worse` — the adjacent siblings in visit order.
+
+### 10.3 Infinite analysis mode
+
+- **Engine:** `max_time_ms <= 0` means *no time limit* (one condition in the
+  controller loop, mirroring `max_simulations = -1`). Touches `search.cpp` →
+  ThreadSanitizer gate re-run.
+- **Server:** `POST /api/search/start {analyse: true}` starts a search with
+  time limit and convergence disabled and **never plays a move on stop**.
+  New `POST /api/play/best` plays the engine's current best move, derived
+  from the *root child visit counts of the live tree* (`tree_view`), which is
+  position-consistent by construction (the tree root always tracks the game
+  position through `advance`/`set_position`); 409 when the root has no
+  visited children yet. If an analysis search is running, `/api/play/best`
+  stops it first, then plays.
+- **UI:** an `∞ infinite` checkbox next to *engine replies*. When checked,
+  the go button becomes **▶ Analyse / ■ Stop** — Stop ends the analysis and
+  plays nothing — and a separate **Move!** button appears that commits the
+  current best move (`/api/play/best`) whether or not the analysis is still
+  running. With *engine replies* also checked, a human move (re)starts the
+  analysis instead of a move-playing search.
+
+### 10.4 Step-by-step mode
+
+- **One step = one MCTS tree-search step:** a single descent — select a
+  path, expand one leaf, evaluate it, backpropagate. The tree grows by at
+  most one node per step; this is *not* a full search run. The step count
+  per click is configurable (N descents per click).
+- **Server:** `POST /api/search/step {steps: N}` runs
+  `start(max_simulations=N, no time limit, no convergence)` and waits for
+  completion; the existing ticket counter guarantees *exactly N* descents
+  even with parallel workers, and `start()` reuses the tree, so repeated
+  steps accumulate. No move is played; stats + a fresh tree snapshot are
+  broadcast after each step. Rejected with 409 while a search is running.
+- **UI:** a `⏭ Step` button (header, next to the go button) with a small
+  `×N` count input (default 1). After each step the client highlights the
+  descent path: it diffs per-node visit counts between consecutive
+  snapshots — backprop increments exactly the nodes on the traversed path,
+  so the diff *is* the path. The footer shows cumulative root visits (the
+  per-step `simulations` counter resets each call).
+
+### 10.5 API additions/changes (over §6)
+
+```
+POST /api/search/start {analyse?: bool}   # analyse: no limits, no move on stop
+POST /api/search/step  {steps?: int=1}    # exactly N descents, no move played
+POST /api/play/best    {}                 # play best move from the live tree
+POST /api/tree/fens    {paths, fen}       # fen: base position of the client's tree
+{type: "tree", fen, ...}                  # tree events carry their root FEN
+```
