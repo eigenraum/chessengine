@@ -81,5 +81,5 @@ GUI ──(user move)──► Chess program ──(position, turn, [old tree])�
 
 ## Status
 
-Design accepted — see `DESIGN.md` for the concrete design (interfaces, data
+Design accepted — see `docs/design/DESIGN.md` for the concrete design (interfaces, data
 structures, threading model) and the milestone plan. Implementation in progress.
