@@ -48,6 +48,69 @@ void Search::set_position(const core::Board& board) {
     tree_ = std::make_unique<Tree>(board, config_.max_nodes);
 }
 
+void Search::advance(core::Move move) {
+    if (!tree_) throw std::logic_error("no position set");
+    if (running()) throw std::logic_error("cannot advance while a search is running");
+
+    bool legal = false;
+    for (core::Move candidate : core::generate_legal(tree_->root_board()))
+        if (candidate == move) legal = true;
+    if (!legal) throw std::invalid_argument("illegal move: " + move.uci());
+
+    core::Board board = tree_->root_board();
+    board.apply(move);
+    tree_ = extract_subtree(*tree_, move, board, config_.max_nodes);
+}
+
+TreeSnapshot Search::snapshot(uint32_t min_visits, int max_depth) const {
+    TreeSnapshot snap;
+    if (!tree_) return snap;
+    if (running()) throw std::logic_error("cannot snapshot while a search is running");
+
+    struct Item {
+        uint32_t index;
+        core::Board board;
+        int depth;
+    };
+    const Tree& tree = *tree_;
+    std::vector<Item> stack{{tree.root(), tree.root_board(), 0}};
+    while (!stack.empty()) {
+        Item item = std::move(stack.back());
+        stack.pop_back();
+        const Node& node = tree[item.index];
+        const uint32_t visits = node.visits.load(std::memory_order_relaxed);
+
+        snap.fens.push_back(item.board.fen());
+        snap.visit_counts.push_back(visits);
+        // Stored Q is from the perspective of the player who moved into the
+        // node; the training row wants the side to move in fens[i].
+        const double q =
+            visits ? 1.0 - node.value_sum.load(std::memory_order_relaxed) / visits : 0.5;
+        snap.values.push_back(float(q));
+
+        std::vector<std::string> moves;
+        std::vector<uint32_t> child_visits;
+        if (node.expand_state.load(std::memory_order_relaxed) == ExpandState::EXPANDED) {
+            for (uint32_t i = 0; i < node.num_children; ++i) {
+                const uint32_t child_index = node.first_child + i;
+                const Node& child = tree[child_index];
+                const uint32_t n = child.visits.load(std::memory_order_relaxed);
+                if (n == 0) continue;
+                moves.push_back(child.move.uci());
+                child_visits.push_back(n);
+                if (n >= min_visits && item.depth < max_depth) {
+                    core::Board board = item.board;
+                    board.apply(child.move);
+                    stack.push_back({child_index, board, item.depth + 1});
+                }
+            }
+        }
+        snap.moves.push_back(std::move(moves));
+        snap.child_visits.push_back(std::move(child_visits));
+    }
+    return snap;
+}
+
 void Search::maybe_expand(uint32_t index, const core::Board& board) {
     Node& node = (*tree_)[index];
     ExpandState expected = ExpandState::UNEXPANDED;
@@ -187,6 +250,11 @@ void Search::start(const SearchLimits& limits) {
     if (controller_.joinable()) controller_.join();  // reap a finished search
 
     stop_requested_.store(false, std::memory_order_relaxed);
+    // Reset the counters here, not on the controller thread: stats() may be
+    // polled right after start() and must not see the previous search's tally.
+    simulations_.store(0, std::memory_order_relaxed);
+    tickets_.store(0, std::memory_order_relaxed);
+    started_at_ = std::chrono::steady_clock::now();
     running_.store(true, std::memory_order_release);
     controller_ = std::thread([this, limits] {
         result_ = run_controller(limits);
@@ -204,9 +272,6 @@ SearchResult Search::stop() {
 // workers, watches the termination conditions, and collects the result.
 SearchResult Search::run_controller(const SearchLimits& limits) {
     stop_workers_.store(false, std::memory_order_relaxed);
-    simulations_.store(0, std::memory_order_relaxed);
-    tickets_.store(0, std::memory_order_relaxed);
-    started_at_ = std::chrono::steady_clock::now();
 
     maybe_expand(tree_->root(), tree_->root_board());
     std::string reason;

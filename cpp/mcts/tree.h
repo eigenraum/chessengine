@@ -49,4 +49,15 @@ private:
     std::atomic<uint32_t> size_;
 };
 
+// Tree reuse (DESIGN.md section 4.5): builds a fresh tree rooted at the old
+// root's child reached by `move`, copying that whole subtree (statistics
+// included, virtual loss zeroed) into a new arena. Copying compacts memory
+// and frees everything outside the played line; it runs once per game move,
+// off the hot path. `new_root_board` must be the old root board with `move`
+// applied. If the child was never visited, the result is simply a fresh
+// single-node tree. Must not be called while a search is running.
+std::unique_ptr<Tree> extract_subtree(const Tree& old_tree, core::Move move,
+                                      const core::Board& new_root_board,
+                                      uint32_t max_nodes);
+
 }  // namespace mcts

@@ -73,9 +73,12 @@ def render_search_result(result, engine_san: str, white_cp: int) -> str:
 
 
 def _engine_move(engine: Engine, game: Game, limits: SearchLimits) -> str:
-    """Search in the background, showing live stats while the engine thinks."""
+    """Search in the background, showing live stats while the engine thinks.
+
+    The engine's tree is kept in sync with the game via advance(), so the
+    search re-uses the subtree explored on previous moves.
+    """
     engine_is_white = game.turn  # before pushing
-    engine.set_position(game.fen())
     engine.start(limits)
     try:
         while engine.running():
@@ -93,6 +96,7 @@ def _engine_move(engine: Engine, game: Game, limits: SearchLimits) -> str:
     print("\r" + " " * 98 + "\r", end="")
 
     game.push(result.best_move)
+    engine.advance(result.best_move)
     white_cp = result.root_cp if engine_is_white else -result.root_cp
     return render_search_result(result, game.san_history()[-1], white_cp)
 
@@ -109,16 +113,27 @@ def _parse_args() -> argparse.Namespace:
         "--time", type=float, default=3.0, metavar="SECONDS", help="engine think time per move"
     )
     parser.add_argument("--workers", type=int, default=1, help="search worker threads")
+    parser.add_argument(
+        "--no-converge",
+        action="store_true",
+        help="disable the convergence early-stop; the engine always thinks for the full --time",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
     engine = None if args.human else Engine(EngineConfig(workers=args.workers))
-    limits = SearchLimits(max_time_ms=int(args.time * 1000))
+    limits = SearchLimits(
+        max_time_ms=int(args.time * 1000),
+        # convergence_window=0 disables the early stop -> time is the only limit
+        convergence_window=0 if args.no_converge else SearchLimits.convergence_window,
+    )
     human_is_white = args.color == "white"
 
     game = Game()
+    if engine is not None:
+        engine.set_position(game.fen())
     print("chessengine — " + ("human vs human" if args.human else f"you play {args.color}"))
     print(_HELP)
     while True:
@@ -132,6 +147,8 @@ def main() -> None:
             command = input("new game? [y/N] ").strip().lower()
             if command == "y":
                 game = Game()
+                if engine is not None:
+                    engine.set_position(game.fen())
                 continue
             return
 
@@ -152,6 +169,8 @@ def main() -> None:
             return
         if entry == "new":
             game = Game()
+            if engine is not None:
+                engine.set_position(game.fen())
             continue
         if entry == "help":
             print(_HELP)
@@ -161,9 +180,12 @@ def main() -> None:
             continue
 
         try:
-            game.push(entry)
+            move = game.push(entry)
         except IllegalMoveError as err:
             print(f"{err} — type 'moves' for legal moves, 'help' for help")
+            continue
+        if engine is not None:
+            engine.advance(move.uci())
 
 
 if __name__ == "__main__":

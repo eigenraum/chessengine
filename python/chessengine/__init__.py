@@ -3,7 +3,14 @@
 Layers (see DESIGN.md): ui -> game -> engine (pybind) -> C++ mcts/core.
 """
 
-from chessengine.engine import Engine, EngineConfig, SearchLimits, SearchResult, SearchStats
+from chessengine.engine import (
+    Engine,
+    EngineConfig,
+    SearchLimits,
+    SearchResult,
+    SearchStats,
+    TreeSnapshot,
+)
 from chessengine.game import Game, IllegalMoveError
 
 __all__ = [
@@ -14,4 +21,5 @@ __all__ = [
     "SearchLimits",
     "SearchResult",
     "SearchStats",
+    "TreeSnapshot",
 ]
