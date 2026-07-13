@@ -109,6 +109,13 @@ main[hidden] { display: none; }
   line-height: 1;
 }
 #tree-tools button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+#tree-compress-k {
+  width: 2.1rem;
+  height: 1.7rem;
+  padding: 0;
+  font-size: 0.85rem;
+  text-align: center;
+}
 #tree-hover-label {
   width: 2.1rem;
   display: flex;
