@@ -50,7 +50,7 @@ tree updates are ThreadSanitizer-clean (see below).
 - [x] M2 — C++ board + move generator, perft gate vs python-chess
 - [x] M3 — sequential MCTS, batched material evaluation, engine plays
 - [x] M4 — tree parallelism (virtual loss), async search, live CLI stats
-- [ ] M5 — tree reuse across moves, training-data export
+- [x] M5 — tree reuse across moves, training-data export
 - [ ] M6 — PyTorch policy/value evaluator, self-play training
 
 ## Development

@@ -19,6 +19,10 @@ public:
     explicit Engine(const mcts::SearchConfig& config) : search_(config, evaluator_) {}
 
     void set_position(const std::string& fen) { search_.set_position(Board(fen)); }
+    void advance(const std::string& uci) { search_.advance(Move::from_uci(uci)); }
+    mcts::TreeSnapshot snapshot(uint32_t min_visits, int max_depth) const {
+        return search_.snapshot(min_visits, max_depth);
+    }
     mcts::SearchResult search(const mcts::SearchLimits& limits) { return search_.run(limits); }
     void start(const mcts::SearchLimits& limits) { search_.start(limits); }
     mcts::SearchResult stop() { return search_.stop(); }
@@ -93,9 +97,18 @@ PYBIND11_MODULE(_mcts, m) {
     py::class_<mcts::SearchResult, mcts::SearchStats>(m, "SearchResult")
         .def_readonly("stop_reason", &mcts::SearchResult::stop_reason);
 
+    py::class_<mcts::TreeSnapshot>(m, "TreeSnapshot")
+        .def_readonly("fens", &mcts::TreeSnapshot::fens)
+        .def_readonly("visit_counts", &mcts::TreeSnapshot::visit_counts)
+        .def_readonly("values", &mcts::TreeSnapshot::values)
+        .def_readonly("moves", &mcts::TreeSnapshot::moves)
+        .def_readonly("child_visits", &mcts::TreeSnapshot::child_visits);
+
     py::class_<Engine>(m, "Engine")
         .def(py::init<const mcts::SearchConfig&>())
         .def("set_position", &Engine::set_position)
+        .def("advance", &Engine::advance)
+        .def("snapshot", &Engine::snapshot, py::arg("min_visits"), py::arg("max_depth"))
         .def("search", &Engine::search, py::call_guard<py::gil_scoped_release>())
         .def("start", &Engine::start)
         .def("stop", &Engine::stop, py::call_guard<py::gil_scoped_release>())

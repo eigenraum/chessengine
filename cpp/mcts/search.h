@@ -49,6 +49,18 @@ struct SearchResult : SearchStats {
                               // "interrupted" | "no_legal_moves"
 };
 
+// Training-data export (DESIGN.md section 4.6): one row per exported node.
+// values are win probabilities from the perspective of the side to move in
+// fens[i]; moves[i]/child_visits[i] give the root-of-policy visit
+// distribution over that node's explored children.
+struct TreeSnapshot {
+    std::vector<std::string> fens;
+    std::vector<uint64_t> visit_counts;
+    std::vector<float> values;
+    std::vector<std::vector<std::string>> moves;
+    std::vector<std::vector<uint32_t>> child_visits;
+};
+
 // One MCTS search over one tree, tree-parallel with virtual loss: all worker
 // threads share the arena, visit counts and value sums are atomics, and the
 // expand CAS plus virtual loss keep them coordinated. A controller thread
@@ -60,6 +72,15 @@ public:
     ~Search();
 
     void set_position(const core::Board& board);  // starts a fresh tree
+
+    // Plays `move` on the internal tree: the matching subtree of the current
+    // root is carried over, everything else is dropped. Throws
+    // std::invalid_argument if the move is not legal in the root position.
+    void advance(core::Move move);
+
+    // Exports the tree for training: nodes with at least min_visits, at most
+    // max_depth plies below the root.
+    TreeSnapshot snapshot(uint32_t min_visits, int max_depth) const;
 
     SearchResult run(const SearchLimits& limits);  // blocking
     void start(const SearchLimits& limits);        // non-blocking, for the GUI

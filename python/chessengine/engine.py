@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from chessengine import _mcts
 
 
@@ -50,6 +52,25 @@ class SearchResult(SearchStats):
     stop_reason: str = ""
 
 
+@dataclass
+class TreeSnapshot:
+    """Search-tree statistics as training data, one row per exported node.
+
+    values[i] is the searched win probability for the side to move in
+    fens[i]; moves[i]/child_visits[i] hold the visit distribution over that
+    node's explored children (the policy target).
+    """
+
+    fens: list[str]
+    visit_counts: np.ndarray  # uint64, per node
+    values: np.ndarray  # float32, per node
+    moves: list[list[str]]
+    child_visits: list[list[int]]
+
+    def __len__(self) -> int:
+        return len(self.fens)
+
+
 def _stats_kwargs(cxx) -> dict:
     return dict(
         simulations=cxx.simulations,
@@ -77,6 +98,25 @@ class Engine:
     def set_position(self, fen: str) -> None:
         """Start a fresh search tree from this position."""
         self._engine.set_position(fen)
+
+    def advance(self, uci_move: str) -> None:
+        """Play a move on the internal tree, keeping the matching subtree.
+
+        Call this as the game progresses (for both players' moves) so the
+        next search starts warm instead of cold.
+        """
+        self._engine.advance(uci_move)
+
+    def tree_snapshot(self, min_visits: int = 1, max_depth: int = 100) -> TreeSnapshot:
+        """Export the search tree as training data (see TreeSnapshot)."""
+        snap = self._engine.snapshot(min_visits, max_depth)
+        return TreeSnapshot(
+            fens=list(snap.fens),
+            visit_counts=np.asarray(snap.visit_counts, dtype=np.uint64),
+            values=np.asarray(snap.values, dtype=np.float32),
+            moves=[list(m) for m in snap.moves],
+            child_visits=[list(v) for v in snap.child_visits],
+        )
 
     def search(self, limits: SearchLimits | None = None) -> SearchResult:
         """Run a blocking search; returns the best move and search statistics."""
