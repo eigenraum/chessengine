@@ -23,3 +23,4 @@ CMakeFiles/
 # shard directories, generated locally, not meant to be committed.
 *.pt
 /data/
+/models/
