@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from chessengine.eval.device import DEVICE_CHOICES
 from chessengine.engine import Engine, EngineConfig, SearchLimits, SearchStats
 from chessengine.game import Game, IllegalMoveError
 from chessengine.ui.web.shard_view import load_game
@@ -615,6 +616,10 @@ def main() -> None:
         metavar="PATH",
         help="checkpoint for --evaluator torch (default: random-initialized weights)",
     )
+    parser.add_argument(
+        "--device", default="cpu", choices=DEVICE_CHOICES,
+        help="--evaluator torch device; auto picks cuda, then Apple Silicon (mps), then cpu",
+    )
     args = parser.parse_args()
 
     # Mirrors ui/cli.py's _make_engine: a torch net wants a bigger batch and
@@ -624,7 +629,7 @@ def main() -> None:
         # Imported here, not at module level: material mode must not import torch.
         from chessengine.eval.torch_eval import TorchEvaluator
 
-        evaluator = TorchEvaluator(checkpoint=args.net)
+        evaluator = TorchEvaluator(checkpoint=args.net, device=args.device)
         workers = args.workers if args.workers is not None else 2
         batch_size = args.batch_size if args.batch_size is not None else 64
     else:

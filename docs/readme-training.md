@@ -76,6 +76,7 @@ Flags that matter day to day:
 | `--snapshot-min-visits` | 8 | interior rows below this visit count aren't exported |
 | `--max-plies` | 512 | ply cap; unresolved games at the cap are scored a draw |
 | `--seed` | 0 | base seed; game *i* uses `seed + i` (reproducible per game) |
+| `--device` | cpu | net device: `auto` picks cuda, then Apple Silicon (mps), then cpu |
 
 `--jobs` vs. `--workers`: `--jobs N` runs N **processes**, each with its own
 loaded net and its own set of games (`multiprocessing`, spawn context — a
@@ -83,6 +84,13 @@ forked process can't safely inherit a live C++ evaluator thread); `--workers`
 is the tree-parallel search **thread** count inside one engine, same knob as
 the terminal/browser UI. Scale `--jobs` with your core count; `--workers`
 rarely needs to go far past 2–4 for a small net.
+
+`--jobs` vs. `--device`: they answer different questions and don't compose
+well. `--jobs` is the CPU story — N processes, each on its own cores. On a
+GPU/MPS device, several *processes* sharing it fight over the same context,
+so keep `--jobs` low (2–4 at most) once `--device` isn't `cpu`; see
+DESIGN-GPU.md §4.3 for the full rationale and `tools/bench_eval.py` for
+measuring your own net/hardware before picking a batch size.
 
 Shards store `visit_count` per row, so you can **re-filter an existing data
 directory with a different `--min-visits-interior` at training time without
@@ -162,13 +170,17 @@ a bad net silently overwriting `best.pt` is worse than an extra manual
 | `--games` | 100 | total games (A plays white on even-indexed games) |
 | `--sims` | 400 | simulations per move, noise off |
 | `--gate` | 0.55 | promotion threshold |
+| `--device` | cpu | net device for both A and B: `auto` picks cuda, then mps, then cpu |
 
 ## Playing against a trained checkpoint
 
 Both frontends default to the built-in material evaluator; pass
 `--evaluator torch --net PATH` to play against a checkpoint instead
 (`--net` omitted = a random-weight net, mostly useful for smoke-testing that
-the plumbing works, not for actually playing).
+the plumbing works, not for actually playing). Add `--device auto` to run
+the net on cuda/mps if available — for a single interactive search there's
+no other game to batch with, so the win is smaller than in self-play/arena
+(DESIGN-GPU.md §8), but it's free.
 
 Terminal:
 

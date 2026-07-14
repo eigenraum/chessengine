@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from chessengine.eval.device import DEVICE_CHOICES
 from chessengine.engine import Engine, EngineConfig, SearchLimits
 from chessengine.game import Game
 
@@ -78,6 +79,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-plies", type=int, default=512)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--gate", type=float, default=0.55)
+    parser.add_argument(
+        "--device", default="cpu", choices=DEVICE_CHOICES,
+        help="net device; auto picks cuda, then Apple Silicon (mps), then cpu "
+        "(default cpu — see DESIGN-GPU.md section 4.3 for --jobs x GPU tradeoffs)",
+    )
     return parser.parse_args(argv)
 
 
@@ -91,8 +97,8 @@ def run(argv: list[str] | None = None) -> dict:
     # without the `train` dependency group.
     from chessengine.eval.torch_eval import TorchEvaluator
 
-    evaluator_a = TorchEvaluator(checkpoint=args.net_a)
-    evaluator_b = TorchEvaluator(checkpoint=args.net_b)
+    evaluator_a = TorchEvaluator(checkpoint=args.net_a, device=args.device)
+    evaluator_b = TorchEvaluator(checkpoint=args.net_b, device=args.device)
     rng = np.random.default_rng(args.seed)
 
     wins = draws = losses = 0

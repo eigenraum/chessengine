@@ -13,6 +13,7 @@ import torch
 from torch import nn
 
 from chessengine import _mcts
+from chessengine.eval.device import select_device
 
 _FILTERS_DEFAULT = 64
 
@@ -79,8 +80,10 @@ class TorchEvaluator:
 
     __call__(planes: np.ndarray [N,19,8,8]) -> (values [N], logits [N,4672]),
     both float32 numpy. Runs on the C++ evaluator thread under the GIL
-    (PyEvaluator in bindings.cpp), so this stays single-threaded torch —
-    self-play parallelizes over processes instead.
+    (PyEvaluator in bindings.cpp) — one deliberate Python round-trip per
+    batch (DESIGN-GPU.md section 4); `device` picks where the forward pass
+    itself runs, `cpu` by default so library use and tests stay on the
+    deterministic reference path unless a caller opts in.
     """
 
     def __init__(
@@ -88,20 +91,30 @@ class TorchEvaluator:
         checkpoint: str | Path | None = None,
         blocks: int = 4,
         filters: int = _FILTERS_DEFAULT,
+        device: str = "cpu",
     ) -> None:
-        torch.set_num_threads(1)
+        self.device = select_device(device)
+        if self.device.type == "cpu":
+            # Self-play/arena get their parallelism from OS processes
+            # (--jobs), not from torch threads within one; on cuda/mps this
+            # doesn't apply (the CPU here only encodes/copies).
+            torch.set_num_threads(1)
         if checkpoint is not None:
             data = torch.load(checkpoint, map_location="cpu")
             self.model = PolicyValueNet(blocks=data["blocks"], filters=data["filters"])
             self.model.load_state_dict(data["state_dict"])
         else:
             self.model = PolicyValueNet(blocks=blocks, filters=filters)
-        self.model.eval()
+        self.model.eval().to(self.device)
 
     def __call__(self, planes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        with torch.no_grad():
-            values, logits = self.model(torch.from_numpy(planes))
-        return values.numpy().astype(np.float32), logits.numpy().astype(np.float32)
+        with torch.inference_mode():
+            x = torch.from_numpy(planes).to(self.device, non_blocking=True)
+            values, logits = self.model(x)
+        return (
+            values.cpu().numpy().astype(np.float32),
+            logits.cpu().numpy().astype(np.float32),
+        )
 
     def save(self, path: str | Path) -> None:
         torch.save(

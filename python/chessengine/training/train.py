@@ -15,39 +15,14 @@ import argparse
 import logging
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 from tqdm import tqdm
 
+from chessengine.eval.device import DEVICE_CHOICES, describe_device, select_device
 from chessengine.training.dataset import filter_rows, load_window, sample_batch
 
-if TYPE_CHECKING:
-    import torch
-
 logger = logging.getLogger("chessengine.train")
-
-
-def _select_device(requested: str) -> "torch.device":
-    import torch
-
-    if requested != "auto":
-        return torch.device(requested)
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
-def _describe_device(device: "torch.device") -> str:
-    import torch
-
-    if device.type == "cuda":
-        return f"cuda ({torch.cuda.get_device_name(device)})"
-    if device.type == "mps":
-        return "mps (Apple Silicon GPU)"
-    return "cpu"
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -73,7 +48,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument(
-        "--device", default="auto", choices=["auto", "cpu", "cuda", "mps"],
+        "--device", default="auto", choices=DEVICE_CHOICES,
         help="auto picks cuda, then Apple Silicon (mps), then cpu",
     )
     args = parser.parse_args(argv)
@@ -119,8 +94,8 @@ def run(argv: list[str] | None = None) -> dict[str, float]:
         len(rows), len(shards), args.window,
     )
 
-    device = _select_device(args.device)
-    logger.info("device: %s", _describe_device(device))
+    device = select_device(args.device)
+    logger.info("device: %s", describe_device(device))
 
     evaluator = TorchEvaluator(checkpoint=args.in_) if args.in_ else TorchEvaluator()
     model = evaluator.model

@@ -63,3 +63,33 @@ def test_engine_plays_with_random_weight_net():
             SearchLimits(max_time_ms=0, max_simulations=200, convergence_window=0)
         )
         assert result.best_move in _mcts.legal_moves(STARTPOS)
+
+
+def test_default_device_is_cpu():
+    """Library callers (and every test above) keep the deterministic CPU
+    reference path unless they opt in (DESIGN-GPU.md section 4.2/4.3)."""
+    evaluator = TorchEvaluator(blocks=2, filters=8)
+    assert evaluator.device.type == "cpu"
+
+
+@pytest.mark.parametrize("device", ["cuda", "mps"])
+def test_device_parity(tmp_path, device):
+    """Same checkpoint, same inputs, cpu vs. accelerator: values/logits must
+    match up to floating point — the accelerator is a speed change, not a
+    behavior change (DESIGN-GPU.md section 6)."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("cuda not available")
+    if device == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("mps not available")
+
+    cpu_evaluator = TorchEvaluator(blocks=2, filters=8, device="cpu")
+    checkpoint = tmp_path / "checkpoint.pt"
+    cpu_evaluator.save(checkpoint)
+    device_evaluator = TorchEvaluator(checkpoint=checkpoint, device=device)
+
+    planes = np.random.default_rng(0).standard_normal((5, _mcts.PLANES, 8, 8)).astype(np.float32)
+    values_cpu, logits_cpu = cpu_evaluator(planes)
+    values_dev, logits_dev = device_evaluator(planes)
+
+    np.testing.assert_allclose(values_cpu, values_dev, atol=1e-4)
+    np.testing.assert_allclose(logits_cpu, logits_dev, atol=1e-3)

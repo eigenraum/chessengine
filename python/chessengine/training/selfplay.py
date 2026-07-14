@@ -21,6 +21,7 @@ import numpy as np
 from tqdm import tqdm
 
 from chessengine import _mcts
+from chessengine.eval.device import DEVICE_CHOICES
 from chessengine.engine import Engine, EngineConfig, SearchLimits
 from chessengine.game import Game
 from chessengine.training.dataset import Row, save_game_shard
@@ -62,6 +63,7 @@ class SelfPlayConfig:
     snapshot_min_visits: int
     snapshot_max_depth: int
     max_plies: int
+    device: str = "cpu"
 
 
 def play_one_game(
@@ -151,7 +153,7 @@ def _init_worker(net_path: str, config: SelfPlayConfig, out_dir: Path, seed: int
     # plays games needs torch.
     from chessengine.eval.torch_eval import TorchEvaluator
 
-    _worker_evaluator = TorchEvaluator(checkpoint=net_path)
+    _worker_evaluator = TorchEvaluator(checkpoint=net_path, device=config.device)
     _worker_net_path = net_path
     _worker_config = config
     _worker_out_dir = out_dir
@@ -182,6 +184,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--workers", type=int, default=2, help="search worker threads per engine")
     parser.add_argument("--batch-size", type=int, default=64, help="evaluator batch size")
+    parser.add_argument(
+        "--device", default="cpu", choices=DEVICE_CHOICES,
+        help="net device; auto picks cuda, then Apple Silicon (mps), then cpu "
+        "(default cpu — see DESIGN-GPU.md section 4.3 for --jobs x GPU tradeoffs)",
+    )
     return parser.parse_args(argv)
 
 
@@ -200,6 +207,7 @@ def run(argv: list[str] | None = None) -> list[Path]:
         temp_plies=args.temp_plies, noise_eps=args.noise_eps,
         dirichlet_alpha=args.dirichlet_alpha, snapshot_min_visits=args.snapshot_min_visits,
         snapshot_max_depth=args.snapshot_max_depth, max_plies=args.max_plies,
+        device=args.device,
     )
     game_indices = list(range(args.games))
     started = time.time()
