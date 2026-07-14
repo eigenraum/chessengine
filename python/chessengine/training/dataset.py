@@ -148,37 +148,20 @@ class Batch:
     value_target: object  # float32 [B]
 
 
-def sample_batch(
-    shards: list[Shard],
-    batch_size: int,
-    rng: np.random.Generator,
-    lambda_root: float = 1.0,
-    lambda_interior: float = 0.0,
-    min_visits_interior: int = 32,
-    rows: list[FilteredRow] | None = None,
-) -> Batch:
-    """Uniformly-sampled minibatch, planes recomputed through
-    `_mcts.encode_planes` (never a duplicated Python encoder — the
-    train/search encoding-identity guarantee, DESIGN-M6.md section 3.4).
-
-    `rows`: pass the result of `filter_rows(shards, ...)` when calling this
-    in a loop (a training step) to avoid re-filtering the whole window every
-    time; computed on demand otherwise.
-    """
+def _batch_from_indices(
+    shards: list[Shard], rows: list[FilteredRow], indices: np.ndarray,
+):
+    """Shared by sample_batch (random, with replacement) and
+    iterate_batches (deterministic full pass, for validation)."""
     import torch
 
-    if rows is None:
-        rows = filter_rows(shards, lambda_root, lambda_interior, min_visits_interior)
-    if not rows:
-        raise ValueError("no rows survive the filter (empty window or min_visits_interior too strict)")
-
-    chosen = rng.integers(0, len(rows), size=batch_size)
-    planes = np.empty((batch_size, _mcts.PLANES, 8, 8), dtype=np.float32)
-    value_target = np.empty(batch_size, dtype=np.float32)
+    n = len(indices)
+    planes = np.empty((n, _mcts.PLANES, 8, 8), dtype=np.float32)
+    value_target = np.empty(n, dtype=np.float32)
     idx_slices: list[np.ndarray] = []
     prob_slices: list[np.ndarray] = []
 
-    for b, r in enumerate(chosen):
+    for b, r in enumerate(indices):
         shard_index, row_index, target = rows[r]
         shard = shards[shard_index]
         planes[b] = _mcts.encode_planes(str(shard.fens[row_index]))
@@ -191,8 +174,8 @@ def sample_batch(
     # Padding index 0 (never -1): gather() would crash on an out-of-range
     # index, and padding prob 0 makes padded entries contribute nothing to
     # the policy loss regardless of which valid index they point at.
-    policy_index = np.zeros((batch_size, kmax), dtype=np.int64)
-    policy_prob = np.zeros((batch_size, kmax), dtype=np.float32)
+    policy_index = np.zeros((n, kmax), dtype=np.int64)
+    policy_prob = np.zeros((n, kmax), dtype=np.float32)
     for b, (idx, prob) in enumerate(zip(idx_slices, prob_slices)):
         policy_index[b, : len(idx)] = idx
         policy_prob[b, : len(prob)] = prob
@@ -203,3 +186,39 @@ def sample_batch(
         policy_prob=torch.from_numpy(policy_prob),
         value_target=torch.from_numpy(value_target),
     )
+
+
+def sample_batch(
+    shards: list[Shard],
+    batch_size: int,
+    rng: np.random.Generator,
+    lambda_root: float = 1.0,
+    lambda_interior: float = 0.0,
+    min_visits_interior: int = 32,
+    rows: list[FilteredRow] | None = None,
+) -> Batch:
+    """Uniformly-sampled minibatch (with replacement), planes recomputed
+    through `_mcts.encode_planes` (never a duplicated Python encoder — the
+    train/search encoding-identity guarantee, DESIGN-M6.md section 3.4).
+
+    `rows`: pass the result of `filter_rows(shards, ...)` when calling this
+    in a loop (a training step) to avoid re-filtering the whole window every
+    time; computed on demand otherwise.
+    """
+    if rows is None:
+        rows = filter_rows(shards, lambda_root, lambda_interior, min_visits_interior)
+    if not rows:
+        raise ValueError("no rows survive the filter (empty window or min_visits_interior too strict)")
+
+    chosen = rng.integers(0, len(rows), size=batch_size)
+    return _batch_from_indices(shards, rows, chosen)
+
+
+def iterate_batches(shards: list[Shard], rows: list[FilteredRow], batch_size: int):
+    """Deterministic, non-overlapping full pass over `rows` (last batch may
+    be smaller). For validation-loss averaging, where sample_batch's
+    with-replacement sampling would double-count rows and skip others.
+    """
+    for start in range(0, len(rows), batch_size):
+        end = min(start + batch_size, len(rows))
+        yield _batch_from_indices(shards, rows, np.arange(start, end))
