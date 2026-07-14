@@ -9,8 +9,7 @@ namespace eval {
 // plumbing real until a learned evaluator replaces it (DESIGN.md section 4.3).
 class MaterialEvaluator : public Evaluator {
 public:
-    void evaluate(std::span<const core::Board* const> positions,
-                  std::span<float> values_out) override;
+    void evaluate(std::span<const EvalRequest> batch) override;
 };
 
 }  // namespace eval

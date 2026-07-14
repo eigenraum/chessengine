@@ -35,6 +35,12 @@ While the engine thinks, the CLI shows live search statistics (simulations,
 nodes, evaluation, principal variation). Ctrl-C during a search plays the
 best move found so far.
 
+Both frontends can also play against a trained PyTorch net instead of the
+default material heuristic: add `--evaluator torch --net PATH` to either
+command. Training that net yourself — self-play data generation, the
+training loop, and the arena promotion gate — is covered in
+[docs/readme-training.md](docs/readme-training.md).
+
 ## How it works
 
 - **Game state (Python):** python-chess validates moves and is the source of

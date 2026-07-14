@@ -18,11 +18,17 @@ dependencies = [
 [project.scripts]
 chessengine = "chessengine.ui.cli:main"
 chessengine-web = "chessengine.ui.web.server:main"
+chessengine-selfplay = "chessengine.training.selfplay:main"
+chessengine-train = "chessengine.training.train:main"
+chessengine-arena = "chessengine.training.arena:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "httpx>=0.27",
+]
+train = [
+    "torch>=2.3",
 ]
 
 [tool.scikit-build]
