@@ -5,6 +5,7 @@
 #include <cmath>
 #include <deque>
 #include <queue>
+#include <random>
 #include <stdexcept>
 
 #include "core/movegen.h"
@@ -157,7 +158,7 @@ TreeView Search::tree_view(uint32_t max_nodes, uint32_t min_visits,
                              ? node.value_sum.load(std::memory_order_relaxed) / item.visits
                              : 0.5;
         view.q.push_back(float(q));
-        view.prior.push_back(node.prior);
+        view.prior.push_back(node.prior.load(std::memory_order_relaxed));
 
         uint32_t children_total = 0;
         // Acquire pairs with the release store in maybe_expand: only then are
@@ -194,11 +195,12 @@ void Search::maybe_expand(uint32_t index, const core::Board& board) {
             node.expand_state.store(ExpandState::UNEXPANDED, std::memory_order_release);
             return;
         }
-        const float prior = 1.0f / float(moves.size());  // uniform until a policy net
+        // Placeholder until the evaluator writes the policy back.
+        const float prior = 1.0f / float(moves.size());
         for (int i = 0; i < moves.size(); ++i) {
             Node& child = (*tree_)[first + uint32_t(i)];
             child.move = moves.begin()[i];
-            child.prior = prior;
+            child.prior.store(prior, std::memory_order_relaxed);
         }
     }
     node.first_child = first;
@@ -223,7 +225,8 @@ uint32_t Search::select_child(const Node& parent) const {
         const double q =
             n > 0 ? child.value_sum.load(std::memory_order_relaxed) / n : 0.5;
         const double score =
-            q + limits_.c_puct * child.prior * sqrt_parent_visits / (1.0 + n);
+            q + limits_.c_puct * child.prior.load(std::memory_order_relaxed) *
+                    sqrt_parent_visits / (1.0 + n);
         if (score > best_score) {
             best_score = score;
             best_index = index;
@@ -235,9 +238,13 @@ uint32_t Search::select_child(const Node& parent) const {
 // The selection phase of one simulation: walk down with PUCT + virtual loss.
 // Terminal and draw leaves are backpropagated immediately; a leaf that needs
 // evaluation is appended to paths/boards instead, parked on its virtual loss
-// until the caller has a full batch.
+// until the caller has a full batch. out_moves gets that leaf's children's
+// moves (for a policy request) when the leaf was actually expanded here or
+// earlier — empty otherwise (expansion-race loser or arena full), which
+// keeps that case a value-only request exactly as before M6a.
 void Search::descend(std::vector<std::vector<uint32_t>>& paths,
-                     std::vector<core::Board>& out_boards) {
+                     std::vector<core::Board>& out_boards,
+                     std::vector<std::vector<core::Move>>& out_moves) {
     Tree& tree = *tree_;
     core::Board board = tree.root_board();
     std::vector<uint32_t> path{tree.root()};
@@ -271,8 +278,17 @@ void Search::descend(std::vector<std::vector<uint32_t>>& paths,
         }
         if (arrived_at_leaf || !expanded) {
             // Fresh leaf (or expansion raced/arena full): needs evaluation.
+            // Only a genuinely expanded leaf gets a policy request — the
+            // race-loser/arena-full case stays value-only, as before M6a.
+            std::vector<core::Move> moves;
+            if (expanded) {
+                moves.reserve(node.num_children);
+                for (uint32_t i = 0; i < node.num_children; ++i)
+                    moves.push_back(tree[node.first_child + i].move);
+            }
             paths.push_back(std::move(path));
             out_boards.push_back(board);
+            out_moves.push_back(std::move(moves));
             return;
         }
 
@@ -322,6 +338,7 @@ void Search::start(const SearchLimits& limits) {
     simulations_.store(0, std::memory_order_relaxed);
     tickets_.store(0, std::memory_order_relaxed);
     started_at_ = std::chrono::steady_clock::now();
+    ++searches_started_;
     running_.store(true, std::memory_order_release);
     controller_ = std::thread([this, limits] {
         result_ = run_controller(limits);
@@ -340,11 +357,56 @@ SearchResult Search::stop() {
 SearchResult Search::run_controller(const SearchLimits& limits) {
     stop_workers_.store(false, std::memory_order_relaxed);
 
-    maybe_expand(tree_->root(), tree_->root_board());
+    Tree& tree = *tree_;
+    maybe_expand(tree.root(), tree.root_board());
     std::string reason;
-    if ((*tree_)[tree_->root()].num_children == 0) {
+    Node& root = tree[tree.root()];
+    if (root.num_children == 0) {
         reason = "no_legal_moves";
     } else {
+        // Root priors: one synchronous evaluator call per search (batch of
+        // one) before any worker starts, so the root is never explored on
+        // placeholder priors while waiting for the first async batch. The
+        // value is discarded — priors only; no visit counts change here
+        // (DESIGN-M6.md section 4.3). Tree reuse keeps the subtree across
+        // moves, so this simply refreshes an already-visited root's priors.
+        std::vector<core::Move> root_moves;
+        root_moves.reserve(root.num_children);
+        for (uint32_t i = 0; i < root.num_children; ++i)
+            root_moves.push_back(tree[root.first_child + i].move);
+        std::vector<float> root_priors(root_moves.size(), 0.0f);
+        core::Board root_board = tree.root_board();
+        float root_value_unused = 0.0f;
+        std::vector<eval::EvalRequest> root_batch;
+        root_batch.push_back({&root_board, root_moves, root_priors, &root_value_unused});
+        queue_.evaluate(root_batch);
+        for (uint32_t i = 0; i < root.num_children; ++i)
+            tree[root.first_child + i].prior.store(root_priors[i], std::memory_order_relaxed);
+
+        // Dirichlet noise for exploration (self-play wants it; interactive
+        // play/analysis leaves root_noise_eps at 0). Seeded from config_.seed
+        // and a per-search counter, so workers=1 stays fully deterministic,
+        // noise included, while every search still draws fresh noise — the
+        // same convention AlphaZero uses.
+        if (limits.root_noise_eps > 0.0f) {
+            std::mt19937_64 rng(config_.seed ^
+                                 (0x9E3779B97F4A7C15ULL * searches_started_));
+            std::gamma_distribution<double> gamma(double(limits.root_dirichlet_alpha), 1.0);
+            std::vector<double> noise(root.num_children);
+            double sum = 0.0;
+            for (double& d : noise) sum += (d = gamma(rng));
+            if (sum > 0.0) {
+                for (uint32_t i = 0; i < root.num_children; ++i) {
+                    Node& child = tree[root.first_child + i];
+                    const float p = child.prior.load(std::memory_order_relaxed);
+                    const float d = float(noise[i] / sum);
+                    const float blended =
+                        (1.0f - limits.root_noise_eps) * p + limits.root_noise_eps * d;
+                    child.prior.store(blended, std::memory_order_relaxed);
+                }
+            }
+        }
+
         std::vector<std::thread> workers;
         for (int i = 0; i < config_.workers; ++i)
             workers.emplace_back([this, &limits] { worker_loop(limits); });
@@ -414,12 +476,15 @@ void Search::worker_loop(const SearchLimits& limits) {
     const int max_in_flight = std::max(config_.batch_size, 1);
     std::vector<std::vector<uint32_t>> paths;  // paths[i] belongs to boards[i]
     std::vector<core::Board> boards;
+    std::vector<std::vector<core::Move>> moves_bufs;
+    std::vector<std::vector<float>> priors_bufs;
     std::vector<float> values;
     bool tickets_exhausted = false;
 
     while (!stop_workers_.load(std::memory_order_relaxed) && !tickets_exhausted) {
         paths.clear();
         boards.clear();
+        moves_bufs.clear();
         for (int k = 0; k < max_in_flight; ++k) {
             // A ticket is one simulation start; with a simulation cap,
             // exactly max_simulations tickets are handed out in total.
@@ -428,13 +493,34 @@ void Search::worker_loop(const SearchLimits& limits) {
                 tickets_exhausted = true;
                 break;
             }
-            descend(paths, boards);
+            descend(paths, boards, moves_bufs);
         }
 
         if (!boards.empty()) {
             values.assign(boards.size(), 0.0f);
-            queue_.evaluate(boards, values);
+            priors_bufs.resize(boards.size());
+            // Build the request spans only once no vector backing them can
+            // reallocate: moves_bufs/priors_bufs/values/boards are all
+            // final-sized by this point.
+            std::vector<eval::EvalRequest> requests;
+            requests.reserve(boards.size());
             for (size_t i = 0; i < boards.size(); ++i) {
+                priors_bufs[i].assign(moves_bufs[i].size(), 0.0f);
+                requests.push_back({&boards[i], moves_bufs[i], priors_bufs[i], &values[i]});
+            }
+            queue_.evaluate(requests);
+
+            for (size_t i = 0; i < boards.size(); ++i) {
+                if (!moves_bufs[i].empty()) {
+                    // Two workers can both park the same leaf (an
+                    // expansion-race loser sees it as EXPANDED too) and both
+                    // write priors here — identical values, harmless.
+                    const uint32_t leaf = paths[i].back();
+                    const Node& leaf_node = (*tree_)[leaf];
+                    for (uint32_t j = 0; j < moves_bufs[i].size(); ++j)
+                        (*tree_)[leaf_node.first_child + j].prior.store(
+                            priors_bufs[i][j], std::memory_order_relaxed);
+                }
                 // The evaluator scores for the side to move = the opponent of
                 // the player who moved into the leaf.
                 backprop(paths[i], 1.0f - values[i]);

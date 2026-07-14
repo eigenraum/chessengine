@@ -89,7 +89,9 @@ PYBIND11_MODULE(_mcts, m) {
         .def_readwrite("convergence_cp_threshold",
                        &mcts::SearchLimits::convergence_cp_threshold)
         .def_readwrite("c_puct", &mcts::SearchLimits::c_puct)
-        .def_readwrite("virtual_loss", &mcts::SearchLimits::virtual_loss);
+        .def_readwrite("virtual_loss", &mcts::SearchLimits::virtual_loss)
+        .def_readwrite("root_noise_eps", &mcts::SearchLimits::root_noise_eps)
+        .def_readwrite("root_dirichlet_alpha", &mcts::SearchLimits::root_dirichlet_alpha);
 
     py::class_<mcts::SearchStats>(m, "SearchStats")
         .def_readonly("simulations", &mcts::SearchStats::simulations)
