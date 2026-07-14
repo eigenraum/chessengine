@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 from chessengine import _mcts
 from chessengine.engine import Engine, EngineConfig, SearchLimits
@@ -131,15 +132,38 @@ def play_one_game(
     return out_path
 
 
-def _play_games_in_worker(bundle) -> list[Path]:
-    net_path, game_indices, seed, config, out_dir = bundle
+# Set once per process by _init_worker: under multiprocessing (--jobs > 1,
+# spawn context) each worker process re-imports this module fresh and calls
+# _init_worker exactly once before any game, so these globals are safe —
+# there is no cross-process sharing, only per-process one-time setup. For
+# --jobs <= 1, run() calls _init_worker directly in the main process.
+_worker_evaluator = None
+_worker_net_path = ""
+_worker_config: SelfPlayConfig | None = None
+_worker_out_dir = Path()
+_worker_seed = 0
+
+
+def _init_worker(net_path: str, config: SelfPlayConfig, out_dir: Path, seed: int) -> None:
+    global _worker_evaluator, _worker_net_path, _worker_config, _worker_out_dir, _worker_seed
     # Lazy: keeps this module (and its pure helpers above) importable
     # without the `train` dependency group; only a worker that actually
     # plays games needs torch.
     from chessengine.eval.torch_eval import TorchEvaluator
 
-    evaluator = TorchEvaluator(checkpoint=net_path)
-    return [play_one_game(evaluator, net_path, gi, seed, config, out_dir) for gi in game_indices]
+    _worker_evaluator = TorchEvaluator(checkpoint=net_path)
+    _worker_net_path = net_path
+    _worker_config = config
+    _worker_out_dir = out_dir
+    _worker_seed = seed
+
+
+def _play_one_game_by_index(game_index: int) -> Path:
+    assert _worker_evaluator is not None and _worker_config is not None, "worker not initialized"
+    return play_one_game(
+        _worker_evaluator, _worker_net_path, game_index, _worker_seed, _worker_config,
+        _worker_out_dir,
+    )
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -179,18 +203,28 @@ def run(argv: list[str] | None = None) -> list[Path]:
     )
     game_indices = list(range(args.games))
     started = time.time()
+    paths: list[Path] = []
 
-    if args.jobs <= 1:
-        paths = _play_games_in_worker((str(args.net), game_indices, args.seed, config, args.out))
-    else:
-        chunks = [game_indices[i :: args.jobs] for i in range(args.jobs)]
-        bundles = [(str(args.net), chunk, args.seed, config, args.out) for chunk in chunks]
-        # spawn, not fork: a forked child would inherit a half-alive C++
-        # evaluator thread from this process's own Engine(s), if any.
-        ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(args.jobs) as pool:
-            results = pool.map(_play_games_in_worker, bundles)
-        paths = [p for sub in results for p in sub]
+    with tqdm(total=len(game_indices), desc="self-play", unit="game") as bar:
+        if args.jobs <= 1:
+            _init_worker(str(args.net), config, args.out, args.seed)
+            for game_index in game_indices:
+                paths.append(_play_one_game_by_index(game_index))
+                bar.update(1)
+        else:
+            # spawn, not fork: a forked child would inherit a half-alive C++
+            # evaluator thread from this process's own Engine(s), if any.
+            # imap_unordered (not map over per-worker chunks) so the bar
+            # ticks per game as each one finishes, not once per worker's
+            # whole batch.
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(
+                args.jobs, initializer=_init_worker,
+                initargs=(str(args.net), config, args.out, args.seed),
+            ) as pool:
+                for path in pool.imap_unordered(_play_one_game_by_index, game_indices):
+                    paths.append(path)
+                    bar.update(1)
 
     elapsed = time.time() - started
     rate = len(paths) / elapsed if elapsed > 0 else float("inf")

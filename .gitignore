@@ -18,3 +18,8 @@ CMakeFiles/
 .vscode/
 .DS_Store
 *.sw[po]
+
+# Training artifacts (docs/readme-training.md): checkpoints and self-play
+# shard directories, generated locally, not meant to be committed.
+*.pt
+/data/

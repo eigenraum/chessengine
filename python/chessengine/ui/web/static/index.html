@@ -13,6 +13,7 @@
     <nav id="tabs">
       <button id="tab-board" class="tab active">Board</button>
       <button id="tab-tree" class="tab">Tree</button>
+      <button id="tab-selfplay" class="tab">Self-play</button>
     </nav>
     <nav>
       <button id="new">New game</button>
@@ -102,6 +103,32 @@
       <summary>parameters</summary>
       <div id="params-body"></div>
     </details>
+  </main>
+
+  <main id="view-selfplay" hidden>
+    <svg id="selfplay-board"></svg>
+    <aside>
+      <div id="selfplay-panel">
+        <h2>Self-play shard</h2>
+        <div class="edit-row">
+          <input
+            id="selfplay-path"
+            type="text"
+            spellcheck="false"
+            placeholder="data/gen1/game-....npz"
+            title="server-side path to a .npz shard written by chessengine-selfplay"
+          />
+          <button id="selfplay-load">Load</button>
+        </div>
+        <p id="selfplay-status" class="params-note"></p>
+        <h2>Moves</h2>
+        <div id="selfplay-history" title="click a move to jump to that position"></div>
+        <h2>Position stats</h2>
+        <div id="selfplay-stats"></div>
+        <h2>Policy (top 8, decoded from the recorded visit distribution)</h2>
+        <div id="selfplay-policy"></div>
+      </div>
+    </aside>
   </main>
 
   <footer>

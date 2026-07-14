@@ -5,6 +5,7 @@ import { Board } from "./board.js";
 import { TreeView } from "./tree.js";
 import { EditMode } from "./edit.js";
 import { ParamsPanel } from "./params.js";
+import { SelfPlayViewer } from "./selfplay_viewer.js";
 import { sparklinePoints, nearestPly } from "./sparkline.js";
 
 const $ = (id) => document.getElementById(id);
@@ -88,6 +89,12 @@ const paramsPanel = new ParamsPanel($("params-body"), {
     if (config) paramsPanel.render(config);
     return config;
   },
+});
+
+// read-only: no onMove — this board only ever shows shard-sourced FENs
+const selfplayBoard = new Board($("selfplay-board"), { onMove: () => {} });
+const selfplayViewer = new SelfPlayViewer(selfplayBoard, {
+  load: (path) => api("/api/selfplay/load", { path }),
 });
 
 // ---- websocket ------------------------------------------------------------
@@ -341,9 +348,11 @@ $("edit").addEventListener("click", () => {
 function showTab(tab) {
   $("view-board").hidden = tab !== "board";
   $("view-tree").hidden = tab !== "tree";
+  $("view-selfplay").hidden = tab !== "selfplay";
   $("tab-board").classList.toggle("active", tab === "board");
   $("tab-tree").classList.toggle("active", tab === "tree");
-  history.replaceState(null, "", tab === "tree" ? "#tree" : "#");
+  $("tab-selfplay").classList.toggle("active", tab === "selfplay");
+  history.replaceState(null, "", tab === "tree" ? "#tree" : tab === "selfplay" ? "#selfplay" : "#");
   if (tab === "tree") {
     // while hidden the canvas was 0×0: its buffer is empty and trees that
     // arrived over the socket could not be fitted — refresh against the real
@@ -356,6 +365,7 @@ function showTab(tab) {
 }
 $("tab-board").addEventListener("click", () => showTab("board"));
 $("tab-tree").addEventListener("click", () => showTab("tree"));
+$("tab-selfplay").addEventListener("click", () => showTab("selfplay"));
 $("tree-fit").addEventListener("click", () => treeView.focusRoot());
 $("tree-zoom-in").addEventListener("click", () => treeView.zoomBy(1.6));
 $("tree-zoom-out").addEventListener("click", () => treeView.zoomBy(1 / 1.6));
@@ -370,4 +380,5 @@ window.treeView = treeView; // debug / end-to-end test hook
 fetch("/api/state").then((r) => r.json()).then(renderState);
 fetch("/api/config").then((r) => r.json()).then((c) => paramsPanel.render(c));
 if (location.hash === "#tree") showTab("tree");
+else if (location.hash === "#selfplay") showTab("selfplay");
 connect();
