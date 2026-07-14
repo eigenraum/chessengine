@@ -15,7 +15,7 @@ from torch import nn
 from chessengine import _mcts
 from chessengine.eval.device import select_device
 
-_FILTERS_DEFAULT = 64
+FILTERS_DEFAULT = 64
 
 
 class _ResidualBlock(nn.Module):
@@ -41,7 +41,7 @@ class PolicyValueNet(nn.Module):
     masking and softmax, not the net (DESIGN-M6.md section 4.1/6)).
     """
 
-    def __init__(self, blocks: int = 4, filters: int = _FILTERS_DEFAULT) -> None:
+    def __init__(self, blocks: int = 4, filters: int = FILTERS_DEFAULT) -> None:
         super().__init__()
         # Stored for checkpointing: the file alone must reconstruct the
         # architecture (see TorchEvaluator).
@@ -90,7 +90,7 @@ class TorchEvaluator:
         self,
         checkpoint: str | Path | None = None,
         blocks: int = 4,
-        filters: int = _FILTERS_DEFAULT,
+        filters: int = FILTERS_DEFAULT,
         device: str = "cpu",
     ) -> None:
         self.device = select_device(device)

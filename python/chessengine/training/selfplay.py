@@ -14,8 +14,10 @@ import argparse
 import multiprocessing
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from tqdm import tqdm
@@ -25,6 +27,9 @@ from chessengine.eval.device import DEVICE_CHOICES
 from chessengine.engine import Engine, EngineConfig, SearchLimits
 from chessengine.game import Game
 from chessengine.training.dataset import Row, save_game_shard
+
+if TYPE_CHECKING:
+    from chessengine.eval.server import EvalServer
 
 
 def white_result_from_outcome(outcome) -> float:
@@ -168,6 +173,20 @@ def _play_one_game_by_index(game_index: int) -> Path:
     )
 
 
+def _play_one_game_with_server(
+    server: "EvalServer", net_path: str, game_index: int, seed: int,
+    config: SelfPlayConfig, out_dir: Path,
+) -> Path:
+    """--parallel-games worker body: one EvalServer client per game, closed
+    when the game ends so the server's coalescing wait doesn't keep counting
+    a finished game as a straggler (DESIGN-GPU.md section 5.2/5.3)."""
+    client = server.client()
+    try:
+        return play_one_game(client, net_path, game_index, seed, config, out_dir)
+    finally:
+        client.close()
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate self-play games")
     parser.add_argument("--net", required=True, type=Path, help="current-best net checkpoint")
@@ -189,7 +208,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="net device; auto picks cuda, then Apple Silicon (mps), then cpu "
         "(default cpu — see DESIGN-GPU.md section 4.3 for --jobs x GPU tradeoffs)",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--parallel-games", type=int, default=1,
+        help="games run concurrently in one process against one shared EvalServer "
+        "that coalesces their batches (the GPU story, DESIGN-GPU.md section 5); "
+        "mutually exclusive with --jobs, which is the CPU story",
+    )
+    args = parser.parse_args(argv)
+    if args.parallel_games > 1 and args.jobs > 1:
+        parser.error("--parallel-games and --jobs are mutually exclusive (pick one)")
+    return args
 
 
 def run(argv: list[str] | None = None) -> list[Path]:
@@ -214,7 +242,27 @@ def run(argv: list[str] | None = None) -> list[Path]:
     paths: list[Path] = []
 
     with tqdm(total=len(game_indices), desc="self-play", unit="game") as bar:
-        if args.jobs <= 1:
+        if args.parallel_games > 1:
+            # Lazy: keeps this module importable without the `train` group;
+            # only the GPU-batching path needs torch.
+            from chessengine.eval.server import EvalServer
+
+            server = EvalServer(checkpoint=str(args.net), device=args.device)
+            try:
+                with ThreadPoolExecutor(max_workers=args.parallel_games) as pool:
+                    futures = [
+                        pool.submit(
+                            _play_one_game_with_server, server, str(args.net), game_index,
+                            args.seed, config, args.out,
+                        )
+                        for game_index in game_indices
+                    ]
+                    for future in as_completed(futures):
+                        paths.append(future.result())
+                        bar.update(1)
+            finally:
+                server.close()
+        elif args.jobs <= 1:
             _init_worker(str(args.net), config, args.out, args.seed)
             for game_index in game_indices:
                 paths.append(_play_one_game_by_index(game_index))

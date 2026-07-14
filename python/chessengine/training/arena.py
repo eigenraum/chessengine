@@ -6,13 +6,18 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from chessengine.eval.device import DEVICE_CHOICES
 from chessengine.engine import Engine, EngineConfig, SearchLimits
 from chessengine.game import Game
+
+if TYPE_CHECKING:
+    from chessengine.eval.server import EvalServer
 
 
 def a_plays_white(game_index: int) -> bool:
@@ -66,6 +71,41 @@ def play_game(
     return game.outcome()
 
 
+def _play_one_game_with_servers(
+    server_a: "EvalServer", server_b: "EvalServer", game_index: int, seed: int,
+    sims: int, workers: int, batch_size: int, temp_plies: int, temp: float, max_plies: int,
+) -> float:
+    """--parallel-games worker body: one EvalServer client per net for this
+    game, closed when the game ends (DESIGN-GPU.md section 5.4). Each game
+    gets its own seeded rng — a shared rng threaded across concurrent
+    threads would race; per-game seeding is also what selfplay.py does."""
+    a_white = a_plays_white(game_index)
+    rng = np.random.default_rng(seed + game_index)
+    client_a = server_a.client()
+    client_b = server_b.client()
+    try:
+        with (
+            Engine(
+                EngineConfig(
+                    evaluator=client_a, workers=workers, batch_size=batch_size,
+                    seed=seed + game_index,
+                )
+            ) as engine_a,
+            Engine(
+                EngineConfig(
+                    evaluator=client_b, workers=workers, batch_size=batch_size,
+                    seed=seed + game_index,
+                )
+            ) as engine_b,
+        ):
+            white, black = (engine_a, engine_b) if a_white else (engine_b, engine_a)
+            outcome = play_game(white, black, sims, temp_plies, temp, max_plies, rng)
+        return score_for_a(outcome, a_white)
+    finally:
+        client_a.close()
+        client_b.close()
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Net-vs-net arena match with a promotion gate")
     parser.add_argument("--net-a", required=True, type=Path)
@@ -84,6 +124,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="net device; auto picks cuda, then Apple Silicon (mps), then cpu "
         "(default cpu — see DESIGN-GPU.md section 4.3 for --jobs x GPU tradeoffs)",
     )
+    parser.add_argument(
+        "--parallel-games", type=int, default=1,
+        help="games run concurrently, each pair of engines backed by two shared "
+        "EvalServers (one per net) that coalesce batches across games "
+        "(DESIGN-GPU.md section 5.4)",
+    )
     return parser.parse_args(argv)
 
 
@@ -92,44 +138,63 @@ def run(argv: list[str] | None = None) -> dict:
     separate from main() — see selfplay.run()'s docstring for why main()
     must return None."""
     args = _parse_args(argv)
+    results: list[float] = []
 
-    # Lazy: keeps argument parsing (and the pure functions above) importable
-    # without the `train` dependency group.
-    from chessengine.eval.torch_eval import TorchEvaluator
+    if args.parallel_games > 1:
+        # Lazy: keeps this module importable without the `train` group; only
+        # the GPU-batching path needs torch.
+        from chessengine.eval.server import EvalServer
 
-    evaluator_a = TorchEvaluator(checkpoint=args.net_a, device=args.device)
-    evaluator_b = TorchEvaluator(checkpoint=args.net_b, device=args.device)
-    rng = np.random.default_rng(args.seed)
+        server_a = EvalServer(checkpoint=args.net_a, device=args.device)
+        server_b = EvalServer(checkpoint=args.net_b, device=args.device)
+        try:
+            with ThreadPoolExecutor(max_workers=args.parallel_games) as pool:
+                futures = [
+                    pool.submit(
+                        _play_one_game_with_servers, server_a, server_b, g, args.seed,
+                        args.sims, args.workers, args.batch_size, args.temp_plies,
+                        args.temp, args.max_plies,
+                    )
+                    for g in range(args.games)
+                ]
+                results = [future.result() for future in as_completed(futures)]
+        finally:
+            server_a.close()
+            server_b.close()
+    else:
+        # Lazy: keeps argument parsing (and the pure functions above)
+        # importable without the `train` dependency group.
+        from chessengine.eval.torch_eval import TorchEvaluator
 
-    wins = draws = losses = 0
-    for g in range(args.games):
-        a_white = a_plays_white(g)
-        with (
-            Engine(
-                EngineConfig(
-                    evaluator=evaluator_a, workers=args.workers,
-                    batch_size=args.batch_size, seed=args.seed + g,
+        evaluator_a = TorchEvaluator(checkpoint=args.net_a, device=args.device)
+        evaluator_b = TorchEvaluator(checkpoint=args.net_b, device=args.device)
+        rng = np.random.default_rng(args.seed)
+
+        for g in range(args.games):
+            a_white = a_plays_white(g)
+            with (
+                Engine(
+                    EngineConfig(
+                        evaluator=evaluator_a, workers=args.workers,
+                        batch_size=args.batch_size, seed=args.seed + g,
+                    )
+                ) as engine_a,
+                Engine(
+                    EngineConfig(
+                        evaluator=evaluator_b, workers=args.workers,
+                        batch_size=args.batch_size, seed=args.seed + g,
+                    )
+                ) as engine_b,
+            ):
+                white, black = (engine_a, engine_b) if a_white else (engine_b, engine_a)
+                outcome = play_game(
+                    white, black, args.sims, args.temp_plies, args.temp, args.max_plies, rng
                 )
-            ) as engine_a,
-            Engine(
-                EngineConfig(
-                    evaluator=evaluator_b, workers=args.workers,
-                    batch_size=args.batch_size, seed=args.seed + g,
-                )
-            ) as engine_b,
-        ):
-            white, black = (engine_a, engine_b) if a_white else (engine_b, engine_a)
-            outcome = play_game(
-                white, black, args.sims, args.temp_plies, args.temp, args.max_plies, rng
-            )
-        result = score_for_a(outcome, a_white)
-        if result == 1.0:
-            wins += 1
-        elif result == 0.5:
-            draws += 1
-        else:
-            losses += 1
+            results.append(score_for_a(outcome, a_white))
 
+    wins = sum(1 for r in results if r == 1.0)
+    draws = sum(1 for r in results if r == 0.5)
+    losses = sum(1 for r in results if r == 0.0)
     score = wins + 0.5 * draws
     fraction = score / args.games
     verdict = "PROMOTE" if fraction >= args.gate else "KEEP"
