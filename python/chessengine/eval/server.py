@@ -9,6 +9,19 @@ Batch composition is timing-dependent, so results are no longer
 bitwise-reproducible across runs (accepted, DESIGN-GPU.md section 1.5) — the
 correctness reference stays 1 worker, CPU, TorchEvaluator, one game at a
 time.
+
+Each EvalServer's own background thread is the only thread that ever calls
+its model, so one server alone is safe. Two *separate* EvalServer instances
+on the same accelerator (e.g. arena's one-per-net setup) are a different
+story: each has its own background thread, so their forward passes can run
+truly concurrently — and on this codebase's PyTorch/MPS build that measurably
+segfaults or deadlocks (two threads, two models, both `.to("mps")`, no
+chessengine code involved at all — see docs/dev/GPU-G2.md). `_device_lock`
+below serializes actual device work across every EvalServer sharing a device
+string, process-wide, so at most one forward pass touches a given
+accelerator at a time regardless of how many servers exist. cpu is exempt:
+concurrent inference from multiple threads is a normal, well-supported case
+there.
 """
 
 from __future__ import annotations
@@ -24,6 +37,24 @@ import torch
 
 from chessengine.eval.device import select_device
 from chessengine.eval.torch_eval import FILTERS_DEFAULT, PolicyValueNet
+
+_device_locks: dict[str, threading.Lock] = {}
+_device_locks_guard = threading.Lock()
+
+
+def _lock_for(device: torch.device) -> threading.Lock | None:
+    """None for cpu (no known concurrency hazard there); otherwise a
+    process-wide lock shared by every EvalServer on that device string, so
+    two servers never dispatch to the same accelerator at once."""
+    if device.type == "cpu":
+        return None
+    key = str(device)
+    with _device_locks_guard:
+        lock = _device_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _device_locks[key] = lock
+        return lock
 
 
 @dataclass
@@ -93,6 +124,7 @@ class EvalServer:
         else:
             self.model = PolicyValueNet(blocks=blocks, filters=filters)
         self.model.eval().to(self.device)
+        self._device_lock = _lock_for(self.device)
 
         self._max_batch = max_batch
         self._coalesce_s = coalesce_ms / 1000.0
@@ -166,11 +198,11 @@ class EvalServer:
     def _evaluate(self, batch: list[_Submission]) -> None:
         try:
             planes = np.concatenate([s.planes for s in batch], axis=0)
-            with torch.inference_mode():
-                x = torch.from_numpy(planes).to(self.device, non_blocking=True)
-                values, logits = self.model(x)
-            values = values.cpu().numpy().astype(np.float32)
-            logits = logits.cpu().numpy().astype(np.float32)
+            if self._device_lock is not None:
+                with self._device_lock:
+                    values, logits = self._forward(planes)
+            else:
+                values, logits = self._forward(planes)
         except Exception as exc:  # a broken model must not take down the server thread
             for s in batch:
                 s.error = exc
@@ -186,3 +218,9 @@ class EvalServer:
                 with s.cv:
                     s.done = True
                     s.cv.notify_all()
+
+    def _forward(self, planes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        with torch.inference_mode():
+            x = torch.from_numpy(planes).to(self.device, non_blocking=True)
+            values, logits = self.model(x)
+        return values.cpu().numpy().astype(np.float32), logits.cpu().numpy().astype(np.float32)

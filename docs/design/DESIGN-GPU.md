@@ -279,6 +279,15 @@ effective per-net batch size; with only one GPU this is still strictly better
 than G1. Game scheduling, seeding (`seed + g`), and the W/D/L accounting are
 unchanged; only the loop body moves into the executor task.
 
+Arena is also the one place two `EvalServer`s exist in the same process, each
+running its own background thread against the same accelerator. In practice
+that combination segfaults/deadlocks on the PyTorch/MPS build this project
+was developed against — a process-wide per-device lock in `EvalServer`
+(`_lock_for`) serializes dispatch across servers sharing a device, so the two
+nets now take turns rather than truly overlapping. See `docs/dev/GPU-G2.md`
+for the repro and fix; this is a stronger version of "halve the effective
+batch size" above — enforced, not just assumed.
+
 ---
 
 ## 6. Testing
