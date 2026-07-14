@@ -12,11 +12,40 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from chessengine.training.dataset import filter_rows, load_window, sample_batch
+
+if TYPE_CHECKING:
+    import torch
+
+logger = logging.getLogger("chessengine.train")
+
+
+def _select_device(requested: str) -> "torch.device":
+    import torch
+
+    if requested != "auto":
+        return torch.device(requested)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def _describe_device(device: "torch.device") -> str:
+    import torch
+
+    if device.type == "cuda":
+        return f"cuda ({torch.cuda.get_device_name(device)})"
+    if device.type == "mps":
+        return "mps (Apple Silicon GPU)"
+    return "cpu"
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -41,6 +70,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--min-visits-interior", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument(
+        "--device", default="auto", choices=["auto", "cpu", "cuda", "mps"],
+        help="auto picks cuda, then Apple Silicon (mps), then cpu",
+    )
     args = parser.parse_args(argv)
     if not args.init and args.data is None:
         parser.error("--data is required unless --init is given")
@@ -52,6 +85,7 @@ def run(argv: list[str] | None = None) -> dict[str, float]:
     returns the average losses ({} for --init). Kept separate from main() —
     see selfplay.run()'s docstring for why main() must return None."""
     args = _parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     # Lazy: --init and plain training both need torch, but nothing above
     # this point does, keeping argument parsing importable/testable without
@@ -62,7 +96,13 @@ def run(argv: list[str] | None = None) -> dict[str, float]:
     from chessengine.eval.torch_eval import TorchEvaluator
 
     if args.init:
-        TorchEvaluator().save(args.out)
+        evaluator = TorchEvaluator()
+        n_params = sum(p.numel() for p in evaluator.model.parameters())
+        logger.info(
+            "net: %d blocks, %d filters, %d parameters",
+            evaluator.model.blocks, evaluator.model.filters, n_params,
+        )
+        evaluator.save(args.out)
         print(f"initialized random net -> {args.out}")
         return {}
 
@@ -73,8 +113,16 @@ def run(argv: list[str] | None = None) -> dict[str, float]:
     if not rows:
         raise SystemExit("no rows survive the filter (window/min_visits_interior too strict)")
 
+    device = _select_device(args.device)
+    logger.info("device: %s", _describe_device(device))
+
     evaluator = TorchEvaluator(checkpoint=args.in_) if args.in_ else TorchEvaluator()
     model = evaluator.model
+    n_params = sum(p.numel() for p in model.parameters())
+    logger.info(
+        "net: %d blocks, %d filters, %d parameters", model.blocks, model.filters, n_params,
+    )
+    model.to(device)
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     rng = np.random.default_rng(args.seed)
@@ -86,6 +134,10 @@ def run(argv: list[str] | None = None) -> dict[str, float]:
             shards, args.batch, rng, args.lambda_root, args.lambda_interior,
             args.min_visits_interior, rows=rows,
         )
+        batch.planes = batch.planes.to(device)
+        batch.policy_index = batch.policy_index.to(device)
+        batch.policy_prob = batch.policy_prob.to(device)
+        batch.value_target = batch.value_target.to(device)
         values, logits = model(batch.planes)
         value_loss = F.binary_cross_entropy(values, batch.value_target)
         log_probs = F.log_softmax(logits, dim=1)
