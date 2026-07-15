@@ -327,7 +327,9 @@ Exposed as `chessengine._mcts`; `engine.py` wraps it. Rules of the boundary:
    live stats in the CLI; convergence stop.
 5. ✅ **M5 — tree reuse + training export:** `advance()`, `tree_snapshot()`.
 6. **M6 — learned evaluation:** PyTorch batch evaluator, policy priors,
-   self-play data generation.
+   self-play data generation. Concrete design: `DESIGN-M6.md`, sliced into
+   M6a (policy plumbing), M6b (encoding + bridge + net), M6c (self-play +
+   training).
 
 ---
 
