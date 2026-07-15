@@ -9,6 +9,7 @@ boundary (DESIGN.md section 5).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 
@@ -23,6 +24,11 @@ class EngineConfig:
     batch_size: int = 8  # max leaf evaluations per batch
     max_nodes: int = 1 << 22  # search-tree arena capacity (~128 MB)
     seed: int = 0
+    # None = the built-in material heuristic. Otherwise a callback
+    # (planes: float32 [N,19,8,8]) -> (values: float32 [N], logits: float32
+    # [N,4672]) — see TorchEvaluator and PyEvaluator in bindings.cpp for the
+    # exact contract. Runs on the C++ evaluator thread under the GIL.
+    evaluator: Callable | None = None
 
 
 @dataclass
@@ -38,6 +44,10 @@ class SearchLimits:
     convergence_cp_threshold: int = 5
     c_puct: float = 1.5  # PUCT exploration constant
     virtual_loss: int = 1
+    # Root exploration noise: self-play wants it, interactive play/analysis
+    # doesn't. 0 = off.
+    root_noise_eps: float = 0.0
+    root_dirichlet_alpha: float = 0.3
 
 
 @dataclass
@@ -116,7 +126,7 @@ class Engine:
         cxx_config.batch_size = config.batch_size
         cxx_config.max_nodes = config.max_nodes
         cxx_config.seed = config.seed
-        self._engine = _mcts.Engine(cxx_config)
+        self._engine = _mcts.Engine(cxx_config, config.evaluator)
 
     def set_position(self, fen: str) -> None:
         """Start a fresh search tree from this position."""
@@ -185,6 +195,35 @@ class Engine:
         """Ask a running search to stop; it returns its result promptly."""
         self._engine.request_stop()
 
+    def close(self) -> None:
+        """Stop any running search and release the C++ engine.
+
+        Required when a Python evaluator is set (EngineConfig.evaluator):
+        dropping the C++ Engine joins the evaluator thread, which may need
+        the GIL to finish its current batch. If that runs while a search is
+        still active and this thread holds the GIL, it deadlocks — so the
+        search must be stopped first. Safe to call more than once. Prefer
+        `with Engine(...) as engine:` over calling this by hand.
+        """
+        engine = getattr(self, "_engine", None)
+        if engine is None:
+            return
+        if engine.running():
+            engine.stop()
+        self._engine = None
+
+    def __enter__(self) -> Engine:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
     @staticmethod
     def _cxx_limits(limits: SearchLimits | None):
         limits = limits or SearchLimits()
@@ -195,4 +234,6 @@ class Engine:
         cxx_limits.convergence_cp_threshold = limits.convergence_cp_threshold
         cxx_limits.c_puct = limits.c_puct
         cxx_limits.virtual_loss = limits.virtual_loss
+        cxx_limits.root_noise_eps = limits.root_noise_eps
+        cxx_limits.root_dirichlet_alpha = limits.root_dirichlet_alpha
         return cxx_limits

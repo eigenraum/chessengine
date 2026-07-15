@@ -10,6 +10,7 @@ pybind11_add_module(_mcts
     cpp/bindings.cpp
     cpp/core/board.cpp
     cpp/core/movegen.cpp
+    cpp/eval/encode.cpp
     cpp/eval/material.cpp
     cpp/mcts/search.cpp
     cpp/mcts/tree.cpp
@@ -29,6 +30,7 @@ if(CHESSENGINE_TSAN)
         cpp/tools/search_stress.cpp
         cpp/core/board.cpp
         cpp/core/movegen.cpp
+        cpp/eval/encode.cpp
         cpp/eval/material.cpp
         cpp/mcts/search.cpp
         cpp/mcts/tree.cpp

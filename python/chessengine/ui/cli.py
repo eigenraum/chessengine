@@ -112,18 +112,47 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--time", type=float, default=3.0, metavar="SECONDS", help="engine think time per move"
     )
-    parser.add_argument("--workers", type=int, default=1, help="search worker threads")
+    parser.add_argument("--workers", type=int, default=None, help="search worker threads")
     parser.add_argument(
         "--no-converge",
         action="store_true",
         help="disable the convergence early-stop; the engine always thinks for the full --time",
     )
+    parser.add_argument(
+        "--evaluator",
+        choices=["material", "torch"],
+        default="material",
+        help="leaf evaluator: cheap material heuristic, or a PyTorch policy/value net",
+    )
+    parser.add_argument(
+        "--net",
+        metavar="PATH",
+        help="checkpoint for --evaluator torch (default: random-initialized weights)",
+    )
     return parser.parse_args()
+
+
+def _make_engine(args: argparse.Namespace) -> Engine:
+    # Batching amortizes the Python round-trip, so a torch net wants a
+    # bigger batch and a couple of workers to fill it; the material default
+    # (workers=1, batch_size=8) stays the baseline (DESIGN-M6.md section 5).
+    if args.evaluator == "torch":
+        # Imported here, not at module level: material mode must not import torch.
+        from chessengine.eval.torch_eval import TorchEvaluator
+
+        evaluator = TorchEvaluator(checkpoint=args.net)
+        workers = args.workers if args.workers is not None else 2
+        batch_size = 64
+    else:
+        evaluator = None
+        workers = args.workers if args.workers is not None else 1
+        batch_size = 8
+    return Engine(EngineConfig(workers=workers, batch_size=batch_size, evaluator=evaluator))
 
 
 def main() -> None:
     args = _parse_args()
-    engine = None if args.human else Engine(EngineConfig(workers=args.workers))
+    engine = None if args.human else _make_engine(args)
     limits = SearchLimits(
         max_time_ms=int(args.time * 1000),
         # convergence_window=0 disables the early stop -> time is the only limit

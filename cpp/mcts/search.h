@@ -34,6 +34,10 @@ struct SearchLimits {
     // can change between searches without rebuilding the engine).
     float c_puct = 1.5f;  // PUCT exploration constant
     int virtual_loss = 1;
+    // Root exploration noise (DESIGN-M6.md section 4.3): self-play wants it,
+    // interactive play and analysis don't. 0 = off.
+    float root_noise_eps = 0.0f;
+    float root_dirichlet_alpha = 0.3f;  // concentration; 0.3 is chess-standard
 };
 
 struct SearchStats {
@@ -125,7 +129,8 @@ private:
     SearchResult run_controller(const SearchLimits& limits);
     void worker_loop(const SearchLimits& limits);
     void descend(std::vector<std::vector<uint32_t>>& paths,
-                 std::vector<core::Board>& out_boards);
+                 std::vector<core::Board>& out_boards,
+                 std::vector<std::vector<core::Move>>& out_moves);
     uint32_t select_child(const Node& parent) const;
     void maybe_expand(uint32_t index, const core::Board& board);
     void backprop(const std::vector<uint32_t>& path, float leaf_value);
@@ -143,6 +148,7 @@ private:
     std::atomic<uint64_t> simulations_{0};     // completed simulations
     std::atomic<int64_t> tickets_{0};          // started simulations (max_simulations)
     std::chrono::steady_clock::time_point started_at_;
+    uint64_t searches_started_ = 0;  // seeds root Dirichlet noise (fresh per search)
 
     std::thread controller_;
     std::atomic<bool> running_{false};

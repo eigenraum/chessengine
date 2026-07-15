@@ -33,30 +33,34 @@ public:
         thread_.join();
     }
 
-    // Blocking: evaluates boards[i] into values[i] (win probability for the
-    // side to move). One round-trip for the whole batch — a worker parks all
-    // its in-flight simulations here at once, which is what amortizes the
-    // handshake cost. Requests may be split across evaluator passes.
-    void evaluate(std::span<const core::Board> boards, std::span<float> values) {
-        int remaining = int(boards.size());
+    // Blocking: evaluates each request in place (values through *value_out,
+    // policy through priors_out where requested). One round-trip for the
+    // whole batch — a worker parks all its in-flight simulations here at
+    // once, which is what amortizes the handshake cost. Requests may be
+    // split across evaluator passes.
+    //
+    // Lifetime: the spans and pointers inside each EvalRequest point into the
+    // calling worker's stack buffers, and the worker is blocked inside this
+    // call until remaining == 0 — so they outlive the evaluator call by
+    // construction.
+    void evaluate(std::span<const eval::EvalRequest> requests) {
+        int remaining = int(requests.size());
         std::unique_lock lock(mutex_);
-        for (size_t i = 0; i < boards.size(); ++i)
-            pending_.push_back({&boards[i], &values[i], &remaining});
+        for (const eval::EvalRequest& request : requests)
+            pending_.push_back({request, &remaining});
         queue_cv_.notify_one();
         done_cv_.wait(lock, [&] { return remaining == 0; });
     }
 
 private:
     struct Request {
-        const core::Board* board;
-        float* value_out;
+        eval::EvalRequest req;
         int* remaining;  // caller's outstanding count; guarded by mutex_
     };
 
     void run() {
         std::vector<Request> batch;
-        std::vector<const core::Board*> boards;
-        std::vector<float> values;
+        std::vector<eval::EvalRequest> requests;
         for (;;) {
             {
                 std::unique_lock lock(mutex_);
@@ -67,17 +71,13 @@ private:
                 pending_.erase(pending_.begin(), pending_.begin() + long(n));
             }
 
-            boards.clear();
-            for (const Request& request : batch) boards.push_back(request.board);
-            values.assign(batch.size(), 0.0f);
-            evaluator_.evaluate(boards, values);
+            requests.clear();
+            for (const Request& request : batch) requests.push_back(request.req);
+            evaluator_.evaluate(requests);
 
             {
                 std::lock_guard lock(mutex_);
-                for (size_t i = 0; i < batch.size(); ++i) {
-                    *batch[i].value_out = values[i];
-                    --*batch[i].remaining;
-                }
+                for (const Request& request : batch) --*request.remaining;
             }
             done_cv_.notify_all();
         }

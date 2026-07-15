@@ -1,0 +1,217 @@
+# Training the learned evaluator
+
+This is the practical companion to [`docs/design/DESIGN-M6.md`](design/DESIGN-M6.md)
+(read that first for *why* things are shaped this way — canonical encoding,
+value bootstrapping, the λ blend). This page answers the operational
+questions: how to run self-play, how to train, how to continue from a
+checkpoint, and how to point the terminal/browser UI at a trained net.
+
+Everything here needs the optional `train` dependency group (torch is not
+installed by default):
+
+```sh
+uv sync --group train
+```
+
+## The pipeline is three separate commands, not a fused loop
+
+Self-play and training are **not** two halves of one loop — they're
+independent CLI commands you run one after another, each reading/writing
+plain files (`.npz` shards, `.pt` checkpoints) on disk:
+
+```sh
+chessengine-selfplay --net best.pt --out data/gen3 --games 500 --jobs 8
+chessengine-train --data data --in best.pt --out candidate.pt
+chessengine-arena --net-a candidate.pt --net-b best.pt
+# candidate scored >= the gate ("PROMOTE")? adopt it as the new best:
+cp candidate.pt best.pt
+```
+
+That's one **generation**. There's no daemon that alternates self-play and
+training automatically — you (or a shell script wrapping the four lines
+above in a loop, incrementing `data/genN`) drive it. This is deliberate:
+self-play, training, and arena have very different resource profiles (CPU
+search vs. GPU/CPU gradient steps vs. more CPU search), so keeping them as
+separate steps you can schedule, retry, and inspect independently is more
+useful than hiding them behind one command — see the module docstring in
+[`python/chessengine/training/__init__.py`](../python/chessengine/training/__init__.py)
+for the same summary in code.
+
+## Generation 0: a random-initialized checkpoint
+
+Self-play needs a net to search with, even for the very first generation.
+Create one random-initialized checkpoint to bootstrap from:
+
+```sh
+chessengine-train --init --out best.pt
+```
+
+## Self-play: generating training data
+
+```sh
+chessengine-selfplay --net best.pt --out data/gen1 --games 500 --jobs 8
+```
+
+Each game is searched move by move with root Dirichlet noise (for
+exploration) and written as one `.npz` shard under `--out`; every node in
+the exported search tree (not just the moves actually played) becomes a
+training row (interior-node training, DESIGN-M6.md §7.3), so one game
+yields hundreds of rows.
+
+Flags that matter day to day:
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--net` | *(required)* | current-best checkpoint to self-play with |
+| `--out` | *(required)* | directory to write `.npz` shards into (created if missing) |
+| `--games` | 100 | games to play |
+| `--sims` | 800 | MCTS simulations per move |
+| `--jobs` | 1 | parallel worker **processes** (see below) |
+| `--workers` | 2 | search **threads** per engine (within one game) |
+| `--batch-size` | 64 | evaluator batch size |
+| `--temp-plies` | 30 | plies sampled `∝ visits` before switching to argmax |
+| `--noise-eps` / `--dirichlet-alpha` | 0.25 / 0.3 | root exploration noise |
+| `--snapshot-min-visits` | 8 | interior rows below this visit count aren't exported |
+| `--max-plies` | 512 | ply cap; unresolved games at the cap are scored a draw |
+| `--seed` | 0 | base seed; game *i* uses `seed + i` (reproducible per game) |
+
+`--jobs` vs. `--workers`: `--jobs N` runs N **processes**, each with its own
+loaded net and its own set of games (`multiprocessing`, spawn context — a
+forked process can't safely inherit a live C++ evaluator thread); `--workers`
+is the tree-parallel search **thread** count inside one engine, same knob as
+the terminal/browser UI. Scale `--jobs` with your core count; `--workers`
+rarely needs to go far past 2–4 for a small net.
+
+Shards store `visit_count` per row, so you can **re-filter an existing data
+directory with a different `--min-visits-interior` at training time without
+regenerating anything** — that filter lives in `chessengine-train`, not
+`chessengine-selfplay` (see below).
+
+## Training: fitting the net to a data window
+
+```sh
+chessengine-train --data data --in best.pt --out candidate.pt
+```
+
+Reads the most recent `--window` games under `--data`, samples minibatches
+uniformly from the filtered rows, and optimizes value (BCE) + policy
+(soft-target cross-entropy) loss with Adam. Both loss components print every
+`--log-every` steps and again as a final average — they should both trend
+down between a fresh checkpoint and one trained on real data.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--data` | *(required unless `--init`)* | self-play shard directory |
+| `--in` | *(none = fresh random net)* | checkpoint to continue training from |
+| `--out` | *(required)* | checkpoint to write |
+| `--window` | 5000 | most recent N games to train on |
+| `--steps` | 4000 | optimizer steps |
+| `--batch` | 256 | minibatch size |
+| `--lr` / `--weight-decay` | 1e-3 / 1e-4 | Adam hyperparameters |
+| `--lambda-root` / `--lambda-interior` | 1.0 / 0.0 | value-target blend (DESIGN-M6.md §7.3) — leave these alone unless you're deliberately experimenting |
+| `--min-visits-interior` | 32 | interior rows need at least this many visits to be trained on |
+
+### Continuing training from a checkpoint
+
+Yes — that's what `--in` is for. `--in CKPT` loads an existing checkpoint's
+architecture *and* weights and keeps optimizing from there; omit it to start
+from a fresh random net instead. A normal generation always passes
+`--in best.pt` (continue from the current best) and writes a new
+`--out candidate.pt`, which then has to clear the arena gate before you
+promote it.
+
+### `--init`: the generation-0 bootstrap
+
+`--init --out PATH` skips training entirely and just writes a random net —
+that's the two-liner from the "Generation 0" section above, exposed as a
+flag instead of a Python snippet. `--data`/`--in` are ignored (and not
+required) in this mode.
+
+## Arena: deciding whether a candidate is actually better
+
+```sh
+chessengine-arena --net-a candidate.pt --net-b best.pt --games 100
+```
+
+Plays A vs. B with colors alternating every game, noise off, a short
+temperature-sampled opening (`--temp-plies`) for variety, then argmax.
+Prints e.g.:
+
+```
+A score: 61.5/100 (0.615) — PROMOTE
+W 55  D 13  L 32
+```
+
+`PROMOTE` means A's score cleared `--gate` (default 0.55 = 55%); `KEEP` means
+it didn't. Exit code is always 0 either way — **the promotion itself is a
+manual step you decide on** after reading the verdict:
+
+```sh
+cp candidate.pt best.pt
+```
+
+There's no automatic promotion; this is intentional (DESIGN-M6.md §7.5) —
+a bad net silently overwriting `best.pt` is worse than an extra manual
+`cp`.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--net-a` / `--net-b` | *(required)* | the two checkpoints |
+| `--games` | 100 | total games (A plays white on even-indexed games) |
+| `--sims` | 400 | simulations per move, noise off |
+| `--gate` | 0.55 | promotion threshold |
+
+## Playing against a trained checkpoint
+
+Both frontends default to the built-in material evaluator; pass
+`--evaluator torch --net PATH` to play against a checkpoint instead
+(`--net` omitted = a random-weight net, mostly useful for smoke-testing that
+the plumbing works, not for actually playing).
+
+Terminal:
+
+```sh
+chessengine --evaluator torch --net best.pt
+```
+
+Browser:
+
+```sh
+chessengine-web --evaluator torch --net best.pt
+```
+
+Both auto-raise `--workers`/`--batch-size` to 2/64 in torch mode (a net
+wants bigger batches to amortize the Python round-trip); pass them
+explicitly to override. The web UI's live config panel shows which
+evaluator is active (`GET /api/config` → `structural.evaluator`) but
+**switching evaluators is a startup-time flag, not something you can change
+from the running UI** — restart `chessengine-web` with a different `--net`
+to play a different checkpoint.
+
+## Sanity-checking the whole pipeline locally
+
+Before spending real compute, a few seconds on a tiny net proves the
+plumbing works end to end:
+
+```sh
+chessengine-train --init --out /tmp/best.pt
+chessengine-selfplay --net /tmp/best.pt --out /tmp/data --games 2 --sims 24 \
+    --workers 1 --batch-size 8 --max-plies 16 --snapshot-min-visits 1
+chessengine-train --data /tmp/data --in /tmp/best.pt --out /tmp/candidate.pt \
+    --steps 20 --batch 16 --min-visits-interior 1
+chessengine-arena --net-a /tmp/candidate.pt --net-b /tmp/best.pt \
+    --games 2 --sims 24 --workers 1 --batch-size 8 --max-plies 16 --temp-plies 2
+```
+
+This is exactly what `tests/python/test_training.py`'s smoke tests and its
+`@pytest.mark.slow` end-to-end test do — `uv run pytest -m slow` runs the
+latter, `uv run pytest` runs the rest.
+
+## Real acceptance criteria
+
+Per `chessengine/training/__init__.py`'s docstring: a real (non-toy) run
+should show both loss components decreasing between generation 0 and
+generation 1 data, and generation 1's net should beat the random-init net at
+≥ 55% over 100 arena games. Nothing in this repo runs that for you
+automatically — it's the actual research/compute step the rest of this
+pipeline exists to support.
