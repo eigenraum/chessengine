@@ -141,11 +141,25 @@ class Session:
         }
 
     def config_event(self) -> dict:
-        """Both parameter groups (§4.3) plus the eval-mapping constant."""
+        """Both parameter groups (§4.3) plus the eval-mapping constant.
+
+        `structural` is built by hand, not dataclasses.asdict(self.config):
+        EngineConfig.evaluator is a live callable (or None) — not
+        JSON-serializable, and asdict() would deepcopy it (a full model
+        copy, for a TorchEvaluator) just to build a response. It's a CLI
+        startup choice, not adjustable through this API, so only a
+        human-readable summary is exposed here.
+        """
         return {
             "type": "config",
             "limits": dataclasses.asdict(self.limits),
-            "structural": dataclasses.asdict(self.config),
+            "structural": {
+                "workers": self.config.workers,
+                "batch_size": self.config.batch_size,
+                "max_nodes": self.config.max_nodes,
+                "seed": self.config.seed,
+                "evaluator": "torch" if self.config.evaluator is not None else "material",
+            },
             "cp_scale": CP_SCALE,
             # a running search still uses the limits it started with
             "searching": self.searching,
@@ -570,13 +584,40 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="chessengine web frontend")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--workers", type=int, default=EngineConfig.workers, help="search worker threads")
+    parser.add_argument("--workers", type=int, default=None, help="search worker threads")
+    parser.add_argument("--batch-size", type=int, default=None, help="evaluator batch size")
     parser.add_argument("--time-ms", type=int, default=SearchLimits.max_time_ms, help="search time per move")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--evaluator",
+        choices=["material", "torch"],
+        default="material",
+        help="leaf evaluator: cheap material heuristic, or a PyTorch policy/value net",
+    )
+    parser.add_argument(
+        "--net",
+        metavar="PATH",
+        help="checkpoint for --evaluator torch (default: random-initialized weights)",
+    )
     args = parser.parse_args()
 
+    # Mirrors ui/cli.py's _make_engine: a torch net wants a bigger batch and
+    # a couple of workers to fill it; the material default (workers=1,
+    # batch_size=8) stays the baseline (DESIGN-M6.md section 5).
+    if args.evaluator == "torch":
+        # Imported here, not at module level: material mode must not import torch.
+        from chessengine.eval.torch_eval import TorchEvaluator
+
+        evaluator = TorchEvaluator(checkpoint=args.net)
+        workers = args.workers if args.workers is not None else 2
+        batch_size = args.batch_size if args.batch_size is not None else 64
+    else:
+        evaluator = None
+        workers = args.workers if args.workers is not None else EngineConfig.workers
+        batch_size = args.batch_size if args.batch_size is not None else EngineConfig.batch_size
+
     session = Session(
-        config=EngineConfig(workers=args.workers),
+        config=EngineConfig(workers=workers, batch_size=batch_size, evaluator=evaluator),
         limits=SearchLimits(max_time_ms=args.time_ms),
     )
     url = f"http://{args.host}:{args.port}/"
