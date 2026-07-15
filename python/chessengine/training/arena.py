@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+from tqdm import tqdm
 
 from chessengine.eval.device import DEVICE_CHOICES
 from chessengine.engine import Engine, EngineConfig, SearchLimits
@@ -140,57 +141,70 @@ def run(argv: list[str] | None = None) -> dict:
     args = _parse_args(argv)
     results: list[float] = []
 
-    if args.parallel_games > 1:
-        # Lazy: keeps this module importable without the `train` group; only
-        # the GPU-batching path needs torch.
-        from chessengine.eval.server import EvalServer
+    def _postfix() -> dict[str, int]:
+        return {
+            "W": sum(1 for r in results if r == 1.0),
+            "D": sum(1 for r in results if r == 0.5),
+            "L": sum(1 for r in results if r == 0.0),
+        }
 
-        server_a = EvalServer(checkpoint=args.net_a, device=args.device)
-        server_b = EvalServer(checkpoint=args.net_b, device=args.device)
-        try:
-            with ThreadPoolExecutor(max_workers=args.parallel_games) as pool:
-                futures = [
-                    pool.submit(
-                        _play_one_game_with_servers, server_a, server_b, g, args.seed,
-                        args.sims, args.workers, args.batch_size, args.temp_plies,
-                        args.temp, args.max_plies,
-                    )
-                    for g in range(args.games)
-                ]
-                results = [future.result() for future in as_completed(futures)]
-        finally:
-            server_a.close()
-            server_b.close()
-    else:
-        # Lazy: keeps argument parsing (and the pure functions above)
-        # importable without the `train` dependency group.
-        from chessengine.eval.torch_eval import TorchEvaluator
+    with tqdm(total=args.games, desc="arena", unit="game") as bar:
+        if args.parallel_games > 1:
+            # Lazy: keeps this module importable without the `train` group;
+            # only the GPU-batching path needs torch.
+            from chessengine.eval.server import EvalServer
 
-        evaluator_a = TorchEvaluator(checkpoint=args.net_a, device=args.device)
-        evaluator_b = TorchEvaluator(checkpoint=args.net_b, device=args.device)
-        rng = np.random.default_rng(args.seed)
+            server_a = EvalServer(checkpoint=args.net_a, device=args.device)
+            server_b = EvalServer(checkpoint=args.net_b, device=args.device)
+            try:
+                with ThreadPoolExecutor(max_workers=args.parallel_games) as pool:
+                    futures = [
+                        pool.submit(
+                            _play_one_game_with_servers, server_a, server_b, g, args.seed,
+                            args.sims, args.workers, args.batch_size, args.temp_plies,
+                            args.temp, args.max_plies,
+                        )
+                        for g in range(args.games)
+                    ]
+                    for future in as_completed(futures):
+                        results.append(future.result())
+                        bar.set_postfix(_postfix())
+                        bar.update(1)
+            finally:
+                server_a.close()
+                server_b.close()
+        else:
+            # Lazy: keeps argument parsing (and the pure functions above)
+            # importable without the `train` dependency group.
+            from chessengine.eval.torch_eval import TorchEvaluator
 
-        for g in range(args.games):
-            a_white = a_plays_white(g)
-            with (
-                Engine(
-                    EngineConfig(
-                        evaluator=evaluator_a, workers=args.workers,
-                        batch_size=args.batch_size, seed=args.seed + g,
+            evaluator_a = TorchEvaluator(checkpoint=args.net_a, device=args.device)
+            evaluator_b = TorchEvaluator(checkpoint=args.net_b, device=args.device)
+            rng = np.random.default_rng(args.seed)
+
+            for g in range(args.games):
+                a_white = a_plays_white(g)
+                with (
+                    Engine(
+                        EngineConfig(
+                            evaluator=evaluator_a, workers=args.workers,
+                            batch_size=args.batch_size, seed=args.seed + g,
+                        )
+                    ) as engine_a,
+                    Engine(
+                        EngineConfig(
+                            evaluator=evaluator_b, workers=args.workers,
+                            batch_size=args.batch_size, seed=args.seed + g,
+                        )
+                    ) as engine_b,
+                ):
+                    white, black = (engine_a, engine_b) if a_white else (engine_b, engine_a)
+                    outcome = play_game(
+                        white, black, args.sims, args.temp_plies, args.temp, args.max_plies, rng
                     )
-                ) as engine_a,
-                Engine(
-                    EngineConfig(
-                        evaluator=evaluator_b, workers=args.workers,
-                        batch_size=args.batch_size, seed=args.seed + g,
-                    )
-                ) as engine_b,
-            ):
-                white, black = (engine_a, engine_b) if a_white else (engine_b, engine_a)
-                outcome = play_game(
-                    white, black, args.sims, args.temp_plies, args.temp, args.max_plies, rng
-                )
-            results.append(score_for_a(outcome, a_white))
+                results.append(score_for_a(outcome, a_white))
+                bar.set_postfix(_postfix())
+                bar.update(1)
 
     wins = sum(1 for r in results if r == 1.0)
     draws = sum(1 for r in results if r == 0.5)
