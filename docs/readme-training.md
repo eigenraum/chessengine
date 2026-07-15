@@ -27,15 +27,15 @@ chessengine-arena --net-a candidate.pt --net-b best.pt
 cp candidate.pt best.pt
 ```
 
-That's one **generation**. There's no daemon that alternates self-play and
-training automatically — you (or a shell script wrapping the four lines
-above in a loop, incrementing `data/genN`) drive it. This is deliberate:
-self-play, training, and arena have very different resource profiles (CPU
-search vs. GPU/CPU gradient steps vs. more CPU search), so keeping them as
-separate steps you can schedule, retry, and inspect independently is more
-useful than hiding them behind one command — see the module docstring in
+That's one **generation**. The three commands stay independent — self-play,
+training, and arena have very different resource profiles (CPU search vs.
+GPU/CPU gradient steps vs. more CPU search), so keeping them as separate
+steps you can schedule, retry, and inspect independently is more useful
+than hiding them behind one command — see the module docstring in
 [`python/chessengine/training/__init__.py`](../python/chessengine/training/__init__.py)
-for the same summary in code.
+for the same summary in code. `chessengine-loop` (below) is the driver that
+calls all three back to back, generation after generation; it's a thin
+wrapper around exactly this four-line sequence, not a different code path.
 
 ## Generation 0: a random-initialized checkpoint
 
@@ -185,6 +185,78 @@ a bad net silently overwriting `best.pt` is worse than an extra manual
 | `--gate` | 0.55 | promotion threshold |
 | `--device` | cpu | net device for both A and B: `auto` picks cuda, then mps, then cpu |
 | `--parallel-games` | 1 | games run concurrently, each pair of engines backed by two shared `EvalServer`s (one per net) |
+
+## `chessengine-loop`: automating the pipeline
+
+```sh
+chessengine-loop --best best.pt --data data
+```
+
+Runs self-play → train → arena generation after generation, forever (until
+you Ctrl-C it) or for a fixed `--generations N`. Each generation is exactly
+the four-line pipeline above, driven through `chessengine-selfplay`,
+`chessengine-train`, and `chessengine-arena`'s own `run()` entry points —
+same code path as the manual commands and the tests, not a reimplementation,
+so their tqdm progress bars show up exactly as they do standalone. Logging
+(one line per stage: games/s, losses, arena verdict) goes to stdout, and
+per-generation scalars go to a TensorBoard run:
+
+```sh
+tensorboard --logdir runs
+```
+
+logged tags: `selfplay/games`, `selfplay/elapsed_s`, `train/value_loss`,
+`train/policy_loss`, `arena/score_fraction`, `arena/wins`, `arena/draws`,
+`arena/losses`, `arena/promoted`.
+
+If `--best` doesn't exist yet, the loop creates it (`chessengine-train
+--init`) before the first generation — no separate generation-0 step
+needed. Every generation's self-play output goes into one flat `--data`
+directory (not per-generation `data/genN` subdirectories like the manual
+example above) since `chessengine-train`'s `--window` scans its data
+directory non-recursively for the most recent games by file mtime; one
+flat, ever-growing directory is what makes that window slide correctly
+across generations.
+
+**Unlike `chessengine-arena` alone, this loop auto-promotes**: a candidate
+that clears `--gate` is copied over `--best` immediately, because an
+unattended loop has no other way to feed generation N's result into
+generation N+1. Pass `--no-auto-promote` to opt back into the manual-`cp`
+behavior — every generation then self-plays against the same `--best` net,
+and candidates just accumulate on disk for you to inspect. Either way, a
+candidate is always kept on disk as `candidate-gen000N-<timestamp>.pt`
+next to `--best`, promoted or not.
+
+`--device` and `--parallel-games` (defaults `auto` and `8`) are threaded
+through to self-play and arena alike, matching this repo's own benchmarked
+recommendation for Apple Silicon (DESIGN-GPU.md's G2 retrospective); pass
+`--device cpu --parallel-games 1 --jobs N` instead to use the CPU-process
+story (`--jobs`) rather than GPU batch-coalescing.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--best` | `best.pt` | current-best checkpoint; created if missing |
+| `--data` | `data` | flat shard directory shared by every generation |
+| `--generations` | 0 | generations to run; 0 = run until interrupted |
+| `--auto-promote` / `--no-auto-promote` | on | copy a PROMOTE-d candidate over `--best` automatically |
+| `--tensorboard-dir` | `runs` | TensorBoard event file directory |
+| `--device` | `auto` | net device for self-play, training, and arena alike |
+| `--parallel-games` | 8 | games run concurrently against one shared net (self-play + arena) |
+| `--jobs` | 1 | self-play worker **processes** (mutually exclusive with `--parallel-games`) |
+| `--workers` | 2 | search threads per engine |
+| `--batch-size` | 64 | evaluator batch size |
+| `--selfplay-games` / `--selfplay-sims` | 100 / 800 | self-play games and sims/move per generation |
+| `--max-plies` | 512 | ply cap for both self-play and arena |
+| `--train-steps` / `--train-batch` | 4000 / 256 | optimizer steps and minibatch size per generation |
+| `--window` | 5000 | most recent N games trained on |
+| `--min-visits-interior` | 32 | interior-row visit-count filter |
+| `--arena-games` / `--arena-sims` | 100 / 400 | candidate-vs-best arena games and sims/move |
+| `--gate` | 0.55 | promotion threshold |
+| `--seed` | 0 | base seed; generation *g* offsets self-play/arena seeds by `g * --selfplay-games` |
+
+Every flag not listed here (root noise, temperature plies, snapshot
+filters, Adam hyperparameters, …) stays at the underlying command's own
+default — `chessengine-loop` only overrides what it explicitly exposes.
 
 ## Playing against a trained checkpoint
 
