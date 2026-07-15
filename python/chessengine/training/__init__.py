@@ -12,6 +12,10 @@ A generation is: self-play -> train -> arena -> promote.
     chessengine-arena --net-a candidate.pt --net-b best.pt
     # promoted? -> cp candidate.pt best.pt
 
+`chessengine-loop` (loop.py) drives exactly this sequence generation after
+generation (auto-promoting on PROMOTE, since an unattended loop has no other
+way to advance), with per-generation scalars written to TensorBoard.
+
 Generation 0's "current best" is a random-initialized net:
 
     uv run --group train python -c \

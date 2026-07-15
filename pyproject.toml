@@ -22,6 +22,7 @@ chessengine-web = "chessengine.ui.web.server:main"
 chessengine-selfplay = "chessengine.training.selfplay:main"
 chessengine-train = "chessengine.training.train:main"
 chessengine-arena = "chessengine.training.arena:main"
+chessengine-loop = "chessengine.training.loop:main"
 
 [dependency-groups]
 dev = [
@@ -30,6 +31,7 @@ dev = [
 ]
 train = [
     "torch>=2.3",
+    "tensorboard>=2.15",
 ]
 
 [tool.scikit-build]
