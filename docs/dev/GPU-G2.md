@@ -47,6 +47,68 @@ pool several games' leaf batches into one that's actually GPU-sized.
 
 No C++ changes, same as G1.
 
+## Bug found after shipping: two EvalServers on one accelerator hang/crash
+
+Found via a real user run: `chessengine-arena ... --device mps
+--parallel-games 8` hung indefinitely (`arena: 0%|...| 0/N`, no progress,
+no error). Arena is the *only* place two `EvalServer`s exist in the same
+process at once — one per net — each with its own background thread. Bare,
+minimal repro with no chessengine code at all confirmed it's a PyTorch/MPS
+issue, not ours:
+
+```python
+import threading, torch
+from torch import nn
+
+def make_model():
+    return nn.Sequential(nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, 1)).eval().to("mps")
+
+model_a, model_b = make_model(), make_model()
+
+def worker(model):
+    for _ in range(5):
+        with torch.inference_mode():
+            model(torch.randn(8, 64, device="mps")).cpu()
+
+t1 = threading.Thread(target=worker, args=(model_a,))
+t2 = threading.Thread(target=worker, args=(model_b,))
+t1.start(); t2.start(); t1.join(); t2.join()
+```
+
+Two threads, two independent models, both `.to("mps")`, run concurrently:
+**segfault** (exit code 139) on one run, a plain **hang** on another —
+nondeterministic, but always broken. A follow-up test showed one `EvalServer`
+with *multiple client threads* (the selfplay case — one model, one
+background thread, N game-threads submitting to it) is completely fine; the
+hazard is specifically **two separate threads both dispatching forward
+passes to the same accelerator concurrently**, regardless of which Python
+object structure gets them there.
+
+**Fix**: `_lock_for(device)` in `server.py` — a process-wide
+`dict[str, threading.Lock]` keyed by device string
+(`_device_locks`/`_device_locks_guard`), handed out once per device and
+shared by every `EvalServer` on that device. `EvalServer._evaluate` acquires
+its device's lock around the actual forward pass (factored into
+`_forward()`), so at most one thread ever touches a given accelerator at a
+time, no matter how many `EvalServer`s exist. `cpu` is exempt — concurrent
+inference from multiple threads there is normal and well-supported; only
+non-cpu devices get a lock.
+
+This does mean arena's two nets (`--parallel-games` with `--device mps`)
+now take turns on the device rather than truly overlapping — that's the
+right trade for correctness over the small amount of extra overlap it costs,
+and matches the design doc's honest expectation (§5.4: "two servers halve
+the effective per-net batch size") anyway, just enforced with a lock instead
+of assumed free.
+
+Regression test: `test_concurrent_servers_on_same_accelerator_do_not_hang`
+in `test_eval_server.py`, parametrized over `cuda`/`mps`, skips when the
+device isn't present. Bounded with a `join(timeout=30)` so a *hang*
+regression fails an assertion instead of freezing CI — but note a *segfault*
+regression (the other failure mode actually observed) kills the whole test
+process regardless of any Python-level timeout; accepted, since this test
+only runs on machines with an actual accelerator.
+
 ## The key correctness trick used in testing
 
 `model.eval()` freezes BatchNorm running statistics, so a row's output

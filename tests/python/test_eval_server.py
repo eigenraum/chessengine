@@ -121,6 +121,61 @@ def test_call_after_client_close_raises():
     server.close()
 
 
+@pytest.mark.parametrize("device", ["cuda", "mps"])
+def test_concurrent_servers_on_same_accelerator_do_not_hang(device):
+    """Regression test for a real bug: two independent EvalServers on the
+    same accelerator (exactly arena's --parallel-games shape, one server per
+    net) each run their own background thread, so their forward passes can
+    execute truly concurrently. On the PyTorch/MPS build this project was
+    developed against, that alone -- no chessengine code involved, bare
+    torch, two threads, two `.to("mps")` models -- segfaults or deadlocks
+    (docs/dev/GPU-G2.md). `_lock_for`'s process-wide per-device lock fixes
+    it by serializing device dispatch across every EvalServer sharing a
+    device string.
+
+    Bounded with a join timeout so a regression fails an assertion instead
+    of hanging the run; note a *segfault* regression would still crash the
+    whole test process rather than fail cleanly -- accepted, since this only
+    runs when an accelerator is actually present.
+    """
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("cuda not available")
+    if device == "mps" and not torch.backends.mps.is_available():
+        pytest.skip("mps not available")
+
+    server_a = EvalServer(blocks=1, filters=4, device=device, coalesce_ms=2.0)
+    server_b = EvalServer(blocks=1, filters=4, device=device, coalesce_ms=2.0)
+    errors: list[Exception] = []
+
+    def worker(server: EvalServer, tag: int) -> None:
+        client = server.client()
+        try:
+            for i in range(5):
+                client(_planes(tag * 10 + i, n=4))
+        except Exception as exc:  # pragma: no cover - failure path
+            errors.append(exc)
+        finally:
+            client.close()
+
+    threads = [
+        threading.Thread(target=worker, args=(server_a, 0)),
+        threading.Thread(target=worker, args=(server_b, 1)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    try:
+        assert not any(t.is_alive() for t in threads), (
+            "hung -- see docs/dev/GPU-G2.md, two EvalServers on one accelerator"
+        )
+        assert not errors
+    finally:
+        server_a.close()
+        server_b.close()
+
+
 def test_broken_model_reports_error_without_killing_server():
     """A batch that raises inside the forward pass must fail only its own
     submitters, not wedge the server thread for later, healthy batches
