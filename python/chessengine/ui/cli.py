@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import time
 
+from chessengine.eval.device import DEVICE_CHOICES
 from chessengine.engine import Engine, EngineConfig, SearchLimits
 from chessengine.game import Game, IllegalMoveError
 
@@ -129,6 +130,10 @@ def _parse_args() -> argparse.Namespace:
         metavar="PATH",
         help="checkpoint for --evaluator torch (default: random-initialized weights)",
     )
+    parser.add_argument(
+        "--device", default="cpu", choices=DEVICE_CHOICES,
+        help="--evaluator torch device; auto picks cuda, then Apple Silicon (mps), then cpu",
+    )
     return parser.parse_args()
 
 
@@ -140,7 +145,7 @@ def _make_engine(args: argparse.Namespace) -> Engine:
         # Imported here, not at module level: material mode must not import torch.
         from chessengine.eval.torch_eval import TorchEvaluator
 
-        evaluator = TorchEvaluator(checkpoint=args.net)
+        evaluator = TorchEvaluator(checkpoint=args.net, device=args.device)
         workers = args.workers if args.workers is not None else 2
         batch_size = 64
     else:
