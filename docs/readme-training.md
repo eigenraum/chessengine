@@ -223,9 +223,16 @@ that clears `--gate` is copied over `--best` immediately, because an
 unattended loop has no other way to feed generation N's result into
 generation N+1. Pass `--no-auto-promote` to opt back into the manual-`cp`
 behavior — every generation then self-plays against the same `--best` net,
-and candidates just accumulate on disk for you to inspect. Either way, a
-candidate is always kept on disk as `candidate-gen000N-<timestamp>.pt`
-next to `--best`, promoted or not.
+and candidates just accumulate on disk for you to inspect.
+
+A candidate that doesn't clear the gate isn't necessarily thrown away:
+every non-promoted candidate's checkpoint is **kept on disk (as
+`candidate-gen000N-<timestamp>.pt` next to `--best`) as long as its arena
+win rate against `--best` clears `--keep-threshold`** (default 0.5 — better
+than a coin flip); otherwise its file is deleted right after the arena
+verdict, so clearly-worse candidates don't pile up while near-misses stay
+around for inspection or as a base to keep training from. Promoted
+candidates are always kept.
 
 `--device` and `--parallel-games` (defaults `auto` and `8`) are threaded
 through to self-play and arena alike, matching this repo's own benchmarked
@@ -239,6 +246,7 @@ story (`--jobs`) rather than GPU batch-coalescing.
 | `--data` | `data` | flat shard directory shared by every generation |
 | `--generations` | 0 | generations to run; 0 = run until interrupted |
 | `--auto-promote` / `--no-auto-promote` | on | copy a PROMOTE-d candidate over `--best` automatically |
+| `--keep-threshold` | 0.5 | a non-promoted candidate's checkpoint is deleted unless its arena win rate clears this |
 | `--tensorboard-dir` | `runs` | TensorBoard event file directory |
 | `--device` | `auto` | net device for self-play, training, and arena alike |
 | `--parallel-games` | 8 | games run concurrently against one shared net (self-play + arena) |

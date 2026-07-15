@@ -4,6 +4,22 @@ from __future__ import annotations
 
 import pytest
 
+from chessengine.training.loop import decide_candidate_action
+
+
+@pytest.mark.parametrize(
+    "promote, auto_promote, fraction, keep_threshold, expected",
+    [
+        (True, True, 0.6, 0.5, "promote"),
+        (True, False, 0.6, 0.5, "keep"),  # cleared the gate but auto-promote is off
+        (False, True, 0.51, 0.5, "keep"),  # missed the gate, still above keep-threshold
+        (False, True, 0.5, 0.5, "discard"),  # exactly at keep-threshold: not kept
+        (False, True, 0.2, 0.5, "discard"),
+    ],
+)
+def test_decide_candidate_action(promote, auto_promote, fraction, keep_threshold, expected):
+    assert decide_candidate_action(promote, auto_promote, fraction, keep_threshold) == expected
+
 
 def test_loop_smoke_two_generations(tmp_path):
     pytest.importorskip("torch")
@@ -24,6 +40,11 @@ def test_loop_smoke_two_generations(tmp_path):
             "--batch-size", "8", "--parallel-games", "2", "--device", "cpu",
             "--max-plies", "10", "--train-steps", "8", "--train-batch", "8",
             "--min-visits-interior", "1", "--arena-games", "2", "--arena-sims", "16",
+            # keep-threshold 0: every candidate survives regardless of arena
+            # score, so the file-count assertion below is deterministic
+            # (decide_candidate_action's keep/discard split is unit-tested
+            # separately, above).
+            "--keep-threshold", "0",
         ]
     )
 

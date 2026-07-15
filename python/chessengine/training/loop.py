@@ -21,6 +21,12 @@ for one generation's result to become the next generation's starting net.
     chessengine-train --data data --in best.pt --out candidate-*.pt ...
     chessengine-arena --net-a candidate-*.pt --net-b best.pt ...
     # PROMOTE -> cp candidate-*.pt best.pt (automatic here)
+
+A candidate that doesn't clear the gate isn't necessarily thrown away: its
+arena win rate against --best still has to clear --keep-threshold (default
+0.5) or its checkpoint file is deleted, so near-miss candidates stay on disk
+for later inspection/continued training while clearly-worse ones don't pile
+up.
 """
 
 from __future__ import annotations
@@ -34,6 +40,22 @@ from pathlib import Path
 from chessengine.eval.device import DEVICE_CHOICES
 
 logger = logging.getLogger("chessengine.loop")
+
+
+def decide_candidate_action(
+    promote: bool, auto_promote: bool, fraction: float, keep_threshold: float
+) -> str:
+    """What to do with a generation's candidate checkpoint once arena has
+    scored it: "promote" (clears the gate and auto-promote is on), "keep"
+    (either it cleared the gate but auto-promote is off, or its win rate is
+    still above --keep-threshold even though it didn't clear the gate), or
+    "discard" (win rate at or below --keep-threshold — not worth the disk
+    space)."""
+    if promote and auto_promote:
+        return "promote"
+    if promote or fraction > keep_threshold:
+        return "keep"
+    return "discard"
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -73,6 +95,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--tensorboard-dir", type=Path, default=Path("runs"),
         help="directory for TensorBoard event files",
+    )
+    parser.add_argument(
+        "--keep-threshold", type=float, default=0.5,
+        help="a non-promoted candidate is deleted unless its arena win rate "
+        "clears this threshold (default 0.5 = keep anything better than a coin "
+        "flip against --best, even short of --gate); promoted candidates are "
+        "always kept",
     )
 
     selfplay = parser.add_argument_group("self-play (per generation)")
@@ -207,18 +236,24 @@ def run(argv: list[str] | None = None) -> None:
             writer.add_scalar("arena/draws", result["draws"], generation)
             writer.add_scalar("arena/losses", result["losses"], generation)
 
-            promoted = result["promote"] and args.auto_promote
-            if promoted:
+            action = decide_candidate_action(
+                result["promote"], args.auto_promote, result["fraction"], args.keep_threshold
+            )
+            if action == "promote":
                 shutil.copyfile(candidate_path, args.best)
                 logger.info("promoted %s -> %s", candidate_path, args.best)
-            elif result["promote"]:
+            elif action == "keep":
                 logger.info(
-                    "PROMOTE but --no-auto-promote: %s left unchanged, candidate at %s",
-                    args.best, candidate_path,
+                    "kept %s (win rate %.3f, best unchanged at %s)",
+                    candidate_path, result["fraction"], args.best,
                 )
             else:
-                logger.info("kept %s (candidate retained at %s)", args.best, candidate_path)
-            writer.add_scalar("arena/promoted", float(promoted), generation)
+                candidate_path.unlink()
+                logger.info(
+                    "discarded %s (win rate %.3f <= --keep-threshold %.2f)",
+                    candidate_path, result["fraction"], args.keep_threshold,
+                )
+            writer.add_scalar("arena/promoted", float(action == "promote"), generation)
             writer.flush()
 
             generation += 1
