@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from chessengine.engine import Engine, EngineConfig, SearchLimits, SearchStats
 from chessengine.game import Game, IllegalMoveError
+from chessengine.ui.web.shard_view import load_game
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATS_INTERVAL_S = 0.25  # ~4 Hz stats stream (DESIGN-VISU.md section 5.1)
@@ -474,6 +475,10 @@ class StepRequest(BaseModel):
     steps: int = 1  # MCTS descents per click (§10.4)
 
 
+class ShardLoadRequest(BaseModel):
+    path: str  # server-side path to a self-play .npz shard
+
+
 def create_app(session: Session | None = None) -> FastAPI:
     session = session or Session()
     app = FastAPI(title="chessengine")
@@ -531,6 +536,17 @@ def create_app(session: Session | None = None) -> FastAPI:
     @app.post("/api/tree/fens")
     async def post_tree_fens(req: TreeFensRequest) -> dict:
         return session.tree_fens(req.paths, req.fen)
+
+    @app.post("/api/selfplay/load")
+    async def post_selfplay_load(req: ShardLoadRequest) -> dict:
+        """Read-only self-play shard viewer (docs/readme-training.md): loads
+        an .npz written by chessengine-selfplay and reconstructs its game
+        for the "Self-play" tab. Stateless — unrelated to the live
+        Game/Engine session; the client keeps the loaded game client-side."""
+        try:
+            return load_game(req.path)
+        except Exception as exc:
+            raise HTTPException(400, f"could not read shard: {exc}") from None
 
     @app.post("/api/search/start")
     async def post_search_start(req: SearchStartRequest | None = None) -> dict:

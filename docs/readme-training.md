@@ -56,7 +56,9 @@ Each game is searched move by move with root Dirichlet noise (for
 exploration) and written as one `.npz` shard under `--out`; every node in
 the exported search tree (not just the moves actually played) becomes a
 training row (interior-node training, DESIGN-M6.md §7.3), so one game
-yields hundreds of rows.
+yields hundreds of rows. A `tqdm` progress bar tracks games completed (not
+plies or rows) and, with `--jobs > 1`, ticks per game as each worker process
+finishes one — not once per worker's whole assigned batch.
 
 Flags that matter day to day:
 
@@ -187,6 +189,32 @@ evaluator is active (`GET /api/config` → `structural.evaluator`) but
 **switching evaluators is a startup-time flag, not something you can change
 from the running UI** — restart `chessengine-web` with a different `--net`
 to play a different checkpoint.
+
+## Browsing self-play games in the web UI
+
+`chessengine-web`'s **Self-play** tab loads and steps through a `.npz`
+shard written by `chessengine-selfplay` — useful for sanity-checking that
+self-play is producing sensible games and reasonable policies without
+writing a script. Enter the shard's path (server-side; the shard has to be
+readable by the machine running `chessengine-web`) and click **Load**:
+
+- The move list on the right replays the game move by move (SAN), click any
+  move to jump the board to that position.
+- Below it: that position's recorded search value, visit count, and game
+  outcome (all from the side to move's perspective), plus the top 8 moves
+  by recorded visit probability — the actual policy target that position
+  contributes to training.
+
+This is read-only and entirely separate from the live game/engine session —
+loading a shard never touches the board you're playing on in the other
+tabs, and there's no server-side "current shard" state (each browser tab
+that loads a shard keeps its own view of it).
+
+A shard only stores positions and sparse policy targets, not the played
+move at each one — the viewer reconstructs it from consecutive root
+positions, and decodes the policy's move indices back into UCI moves. Both
+are pure computation over data already in the shard; no separate format or
+regeneration needed.
 
 ## Sanity-checking the whole pipeline locally
 
