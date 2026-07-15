@@ -1,0 +1,6 @@
+# Supervised-pretraining data lives here but is never committed:
+# the downloaded Lichess PGN dump (compressed or not) and the shards
+# chessengine-pgn-import derives from it. See README.md in this directory.
+*.pgn
+*.pgn.zst
+shards/
