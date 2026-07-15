@@ -328,6 +328,42 @@ body.spare-dragging { cursor: grabbing; }
   margin: 0.3rem 0;
 }
 
+/* self-play shard viewer (read-only: no eval bar, no move input) */
+#selfplay-board {
+  width: min(86vh, 640px);
+  height: min(86vh, 640px);
+  touch-action: none;
+  border-radius: 4px;
+}
+#selfplay-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#selfplay-panel .edit-row { display: flex; gap: 0.4rem; margin: 0.3rem 0; }
+#selfplay-path {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid #4a4641;
+  border-radius: 3px;
+  padding: 0.25rem 0.4rem;
+  font: 0.78rem ui-monospace, monospace;
+}
+#selfplay-history {
+  max-height: 8rem;
+  overflow-y: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 0.15rem 0.4rem;
+  margin-bottom: 0.6rem;
+}
+#selfplay-history .movenum { color: var(--muted); }
+#selfplay-history .move { cursor: pointer; }
+#selfplay-history .move.current { color: var(--accent); font-weight: 600; }
+#selfplay-history .move:hover { color: var(--accent); text-decoration: underline; }
+#selfplay-stats, #selfplay-policy { margin-bottom: 0.6rem; }
+.stat-row { display: flex; justify-content: space-between; gap: 0.6rem; margin: 0.15rem 0; font-size: 0.85rem; }
+.stat-row span:first-child { color: var(--muted); }
+
 footer {
   display: flex;
   gap: 1.5rem;
