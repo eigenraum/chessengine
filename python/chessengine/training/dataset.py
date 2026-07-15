@@ -8,6 +8,7 @@ dependency group. Batch/sample_batch import torch lazily, only when called.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -222,3 +223,43 @@ def iterate_batches(shards: list[Shard], rows: list[FilteredRow], batch_size: in
     for start in range(0, len(rows), batch_size):
         end = min(start + batch_size, len(rows))
         yield _batch_from_indices(shards, rows, np.arange(start, end))
+
+
+def stream_shard_batches(
+    shard_paths: Sequence[str | Path],
+    batch_size: int,
+    rng: np.random.Generator,
+    *,
+    buffer_shards: int = 8,
+    shuffle: bool = True,
+    lambda_root: float = 1.0,
+    lambda_interior: float = 0.0,
+    min_visits_interior: int = 32,
+):
+    """One epoch of batches over `shard_paths`, loading only `buffer_shards`
+    shards into memory at a time — for datasets far larger than RAM (the
+    supervised PGN corpus, pretrain.py) where load_window's "all shards
+    resident" model does not fit.
+
+    Batches never span buffers, so `buffer_shards` is the shuffling grain: a
+    small buffer streams with little memory but mixes rows only within a few
+    shards; a large one shuffles more thoroughly at higher memory cost. With
+    `shuffle=True` both the buffer order and the rows within each buffer are
+    permuted (deterministically, from `rng`); `shuffle=False` is a stable
+    full pass, for validation. Encoding goes through the same
+    `_batch_from_indices` (hence `_mcts.encode_planes`) as training and
+    self-play — one encoder everywhere (DESIGN-M6.md section 3.4).
+    """
+    order = np.arange(len(shard_paths))
+    if shuffle:
+        rng.shuffle(order)
+    for start in range(0, len(order), buffer_shards):
+        shards = [load_shard(shard_paths[i]) for i in order[start : start + buffer_shards]]
+        rows = filter_rows(shards, lambda_root, lambda_interior, min_visits_interior)
+        if not rows:
+            continue
+        indices = np.arange(len(rows))
+        if shuffle:
+            rng.shuffle(indices)
+        for b in range(0, len(indices), batch_size):
+            yield _batch_from_indices(shards, rows, indices[b : b + batch_size])

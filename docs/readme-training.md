@@ -46,6 +46,68 @@ Create one random-initialized checkpoint to bootstrap from:
 chessengine-train --init --out best.pt
 ```
 
+## Optional but recommended: pretrain generation 0 on human games
+
+A random net makes random moves, so the first self-play generations are slow
+and noisy. A **supervised** warm start — cloning human moves from a Lichess
+game dump — gives generation 0 a net that already plays plausible chess, so
+self-play starts from something worth improving instead of from noise. This is
+two commands and is entirely optional; the RL loop works from `--init` alone.
+
+```sh
+# 1. Download a standard-rated PGN dump from https://database.lichess.org/
+#    into data_pretrain/ (see data_pretrain/README.md). No need to decompress.
+# 2. Import it into training shards (streams the .zst on the fly):
+chessengine-pgn-import --pgn data_pretrain/lichess.pgn.zst --out data_pretrain/shards \
+    --min-elo 1500
+
+# 3. Pretrain a net and use it as generation 0's best.pt:
+chessengine-pretrain --data data_pretrain/shards --out best.pt --epochs 1
+```
+
+`chessengine-pgn-import` filters to standard chess (no variants/Chess960), a
+finished result, and both players rated ≥ `--min-elo`, then writes the **same
+`.npz` shard format as self-play**: one row per position, the played move as a
+one-hot policy target, and the game result (from the side to move) as the
+value target. `.pgn.zst` is streamed through `zstd`/`pzstd` — no giant
+decompressed file. `--max-games N` imports a subset for a quick trial.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--pgn` | *(required)* | input `.pgn` or `.pgn.zst` |
+| `--out` | `data_pretrain/shards` | output directory for `game-pgn-*.npz` shards |
+| `--min-elo` | 1500 | drop games where either player is rated below this (0 = keep all) |
+| `--min-plies` | 10 | drop games shorter than this (aborts, instant resigns) |
+| `--games-per-shard` | 2000 | games bundled per shard file |
+| `--max-games` | 0 | stop after this many games (0 = whole file) |
+
+`chessengine-pretrain` trains the standard `PolicyValueNet` with the **same
+loss as `chessengine-train`** (value BCE + policy cross-entropy), but streams
+the corpus a few shards at a time (`--buffer-shards`) so a dataset far larger
+than RAM never has to be fully resident, and does real epochs (full passes)
+instead of with-replacement sampling. It holds out `--val-frac` of the shards
+for validation / early stopping and saves a checkpoint after every epoch. The
+net architecture defaults (4 blocks, 64 filters) match everything else, so the
+output is a drop-in `best.pt`.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--data` | *(required)* | directory of `game-pgn-*.npz` shards |
+| `--out` | *(required)* | checkpoint to write (drop-in `best.pt`) |
+| `--in` | *(none = fresh net)* | checkpoint to continue from |
+| `--blocks` / `--filters` | 4 / 64 | fresh-net architecture (ignored with `--in`) |
+| `--epochs` | 1 | full passes over the training shards |
+| `--batch` | 256 | minibatch size |
+| `--lr` / `--weight-decay` | 1e-3 / 1e-4 | Adam hyperparameters |
+| `--buffer-shards` | 8 | shards held in memory (and shuffled across) at once |
+| `--val-frac` | 0.05 | fraction of shards held out for validation |
+| `--patience` | 2 | stop after this many epochs with no val improvement (0 = off) |
+| `--max-steps` | 0 | cap optimizer steps per epoch (0 = whole pass) |
+| `--device` | auto | cuda, then Apple Silicon (mps), then cpu |
+
+From here the RL pipeline is identical — the pretrained `best.pt` is just a
+much stronger starting point for self-play than a random init.
+
 ## Self-play: generating training data
 
 ```sh
