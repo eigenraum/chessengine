@@ -166,6 +166,44 @@ def test_selfplay_smoke(tmp_path):
         assert ((idx >= 0) & (idx < 4672)).all()
 
 
+def test_selfplay_parallel_games_smoke(tmp_path):
+    """G2 path (DESIGN-GPU.md section 5.3): several games share one
+    EvalServer instead of one process each. Runs entirely on cpu — no
+    accelerator needed to exercise the coalescing machinery."""
+    pytest.importorskip("torch")
+    from chessengine.eval.torch_eval import TorchEvaluator
+    from chessengine.training.selfplay import run as selfplay_run
+
+    net_path = tmp_path / "net.pt"
+    TorchEvaluator(blocks=1, filters=8).save(net_path)
+    out_dir = tmp_path / "data"
+
+    paths = selfplay_run(
+        [
+            "--net", str(net_path), "--out", str(out_dir),
+            "--games", "3", "--sims", "16", "--workers", "1", "--batch-size", "8",
+            "--max-plies", "10", "--snapshot-min-visits", "1",
+            "--parallel-games", "3", "--device", "cpu",
+        ]
+    )
+    assert len(paths) == 3
+    for path in paths:
+        assert path.exists()
+        assert len(load_shard(path)) > 0
+
+
+def test_selfplay_parallel_games_rejects_jobs(tmp_path):
+    from chessengine.training.selfplay import run as selfplay_run
+
+    with pytest.raises(SystemExit):
+        selfplay_run(
+            [
+                "--net", str(tmp_path / "net.pt"), "--out", str(tmp_path / "data"),
+                "--jobs", "2", "--parallel-games", "2",
+            ]
+        )
+
+
 # --- 5. Training smoke -------------------------------------------------------
 
 
@@ -228,6 +266,29 @@ def test_arena_smoke(tmp_path):
     # driver assigns white via a_plays_white(g), exercised for both games run.
     assert a_plays_white(0) is True
     assert a_plays_white(1) is False
+
+
+def test_arena_parallel_games_smoke(tmp_path):
+    """G2 path (DESIGN-GPU.md section 5.4): each game gets its own client off
+    two shared EvalServers (one per net) instead of the sequential loop."""
+    pytest.importorskip("torch")
+    from chessengine.eval.torch_eval import TorchEvaluator
+    from chessengine.training.arena import run as arena_run
+
+    net_a = tmp_path / "a.pt"
+    net_b = tmp_path / "b.pt"
+    TorchEvaluator(blocks=1, filters=8).save(net_a)
+    TorchEvaluator(blocks=1, filters=8).save(net_b)
+
+    result = arena_run(
+        [
+            "--net-a", str(net_a), "--net-b", str(net_b),
+            "--games", "3", "--sims", "16", "--workers", "1", "--batch-size", "8",
+            "--max-plies", "10", "--temp-plies", "2",
+            "--parallel-games", "3", "--device", "cpu",
+        ]
+    )
+    assert result["wins"] + result["draws"] + result["losses"] == 3
 
 
 # --- 7. End-to-end mini-generation ------------------------------------------

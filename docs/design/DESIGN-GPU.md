@@ -1,6 +1,8 @@
 # Design Document: Device-Accelerated Evaluation (CUDA / MPS)
 
-Status: **draft (2026-07-15)**. Companion to `DESIGN.md` and `DESIGN-M6.md`.
+Status: **G1 and G2 implemented (2026-07-15)**. Companion to `DESIGN.md` and
+`DESIGN-M6.md`. See `docs/dev/GPU-G1.md` and `docs/dev/GPU-G2.md` for what
+actually shipped, benchmark results, and gotchas.
 Goal: run `PolicyValueNet` inference on CUDA, then MPS, then CPU only as the
 last resort — everywhere the net is used at *search* time (`chessengine-selfplay`,
 `chessengine-arena`, and the interactive UIs), not just in the offline
@@ -302,17 +304,23 @@ unchanged; only the loop body moves into the executor task.
 
 ## 7. Milestones (shippable slices)
 
-### G1 — device-aware evaluator
+### G1 — device-aware evaluator — shipped
 
 `eval/device.py` (extracted from train.py) · `TorchEvaluator(device=)` ·
 `--device` in selfplay/arena/cli/web · docs + rule-of-thumb for `--jobs`×GPU
 · bench script · device-parity test. Engine behavior at defaults: unchanged.
 
-### G2 — in-process parallel games + `EvalServer`
+`tools/bench_eval.py` on an Apple-Silicon MPS device confirmed the small-
+batch ceiling this design predicted: cpu ≈ 2,000 positions/s at batch 64;
+mps ≈ 550 positions/s at batch 1 (dispatch overhead loses to cpu) but
+≈ 40,000–63,000 positions/s at batch 64–256. That gap is what motivated
+shipping G2 immediately rather than waiting — see `docs/dev/GPU-G1.md`.
+
+### G2 — in-process parallel games + `EvalServer` — shipped
 
 `eval/server.py` · `--parallel-games` in selfplay and arena (exclusive with
-`--jobs`) · demux + smoke tests. Ships only if G1's benchmark shows the
-small-batch ceiling actually binds (it almost certainly does on MPS).
+`--jobs`) · demux + smoke tests. Details, test strategy, and gotchas in
+`docs/dev/GPU-G2.md`.
 
 ---
 

@@ -77,6 +77,7 @@ Flags that matter day to day:
 | `--max-plies` | 512 | ply cap; unresolved games at the cap are scored a draw |
 | `--seed` | 0 | base seed; game *i* uses `seed + i` (reproducible per game) |
 | `--device` | cpu | net device: `auto` picks cuda, then Apple Silicon (mps), then cpu |
+| `--parallel-games` | 1 | games run concurrently against one shared net (see below); mutually exclusive with `--jobs` |
 
 `--jobs` vs. `--workers`: `--jobs N` runs N **processes**, each with its own
 loaded net and its own set of games (`multiprocessing`, spawn context — a
@@ -91,6 +92,18 @@ GPU/MPS device, several *processes* sharing it fight over the same context,
 so keep `--jobs` low (2–4 at most) once `--device` isn't `cpu`; see
 DESIGN-GPU.md §4.3 for the full rationale and `tools/bench_eval.py` for
 measuring your own net/hardware before picking a batch size.
+
+`--parallel-games` (DESIGN-GPU.md §5, the "G2" slice): the GPU-shaped
+alternative to `--jobs`. Instead of N processes each with their own
+evaluator, `--parallel-games N` runs N games as threads *in one process*,
+sharing one `EvalServer` that coalesces all their leaf batches into single,
+larger forward passes on `--device`. A single engine rarely produces a
+GPU-sized batch on its own early in a search; pooling several games' batches
+is what actually fills one. Requires `--jobs 1` (the default) — pick one or
+the other, they answer the same "how do I parallelize" question for
+different hardware. Reproducibility is relaxed here: which games' batches
+land together depends on thread timing, so results aren't bit-identical
+across runs the way `--jobs 1 --parallel-games 1` (the reference path) is.
 
 Shards store `visit_count` per row, so you can **re-filter an existing data
 directory with a different `--min-visits-interior` at training time without
@@ -171,6 +184,7 @@ a bad net silently overwriting `best.pt` is worse than an extra manual
 | `--sims` | 400 | simulations per move, noise off |
 | `--gate` | 0.55 | promotion threshold |
 | `--device` | cpu | net device for both A and B: `auto` picks cuda, then mps, then cpu |
+| `--parallel-games` | 1 | games run concurrently, each pair of engines backed by two shared `EvalServer`s (one per net) |
 
 ## Playing against a trained checkpoint
 
