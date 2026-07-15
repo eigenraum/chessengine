@@ -15,7 +15,7 @@ void copy_stats(const Node& src, Node& dst) {
                      std::memory_order_relaxed);
     dst.value_sum.store(src.value_sum.load(std::memory_order_relaxed),
                         std::memory_order_relaxed);
-    dst.prior = src.prior;
+    dst.prior.store(src.prior.load(std::memory_order_relaxed), std::memory_order_relaxed);
     dst.move = src.move;
 }
 

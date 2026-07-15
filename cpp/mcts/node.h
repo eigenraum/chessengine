@@ -25,11 +25,17 @@ struct Node {
     std::atomic<uint32_t> visits{0};
     std::atomic<int32_t> virtual_loss{0};
     std::atomic<double> value_sum{0.0};
-    float prior{0.0f};        // P(move | parent); uniform until a policy net lands
+    // P(move | parent); set to uniform at expansion, then overwritten by the
+    // evaluator's policy output once it returns (DESIGN-M6.md section 4.2) —
+    // concurrent with select_child's reads, hence atomic.
+    std::atomic<float> prior{0.0f};
     uint32_t first_child{0};
     uint16_t num_children{0};
     core::Move move{};        // the move that led here (from the parent)
     std::atomic<ExpandState> expand_state{ExpandState::UNEXPANDED};
 };
+
+static_assert(std::atomic<float>::is_always_lock_free);
+static_assert(sizeof(Node) == 32);
 
 }  // namespace mcts

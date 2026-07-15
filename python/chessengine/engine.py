@@ -38,6 +38,10 @@ class SearchLimits:
     convergence_cp_threshold: int = 5
     c_puct: float = 1.5  # PUCT exploration constant
     virtual_loss: int = 1
+    # Root exploration noise: self-play wants it, interactive play/analysis
+    # doesn't. 0 = off.
+    root_noise_eps: float = 0.0
+    root_dirichlet_alpha: float = 0.3
 
 
 @dataclass
@@ -195,4 +199,6 @@ class Engine:
         cxx_limits.convergence_cp_threshold = limits.convergence_cp_threshold
         cxx_limits.c_puct = limits.c_puct
         cxx_limits.virtual_loss = limits.virtual_loss
+        cxx_limits.root_noise_eps = limits.root_noise_eps
+        cxx_limits.root_dirichlet_alpha = limits.root_dirichlet_alpha
         return cxx_limits
